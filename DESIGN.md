@@ -25,9 +25,9 @@ Mirror of `earendil/src/lib/api/client.ts::BlogApi` — **the FE interface is th
 source of truth**; a drift between the two is a bug in whichever moved.
 
 ```
-GET /api/posts?offset&limit&tag&from&to → { total, items: PostSummary[] }  // tag repeatable (OR); from/to inclusive YYYY-MM-DD
+GET /api/posts?offset&limit&tag&from&to&readMin&readMax&sort → { total, items: PostSummary[] }  // tag repeatable (OR); from/to + readMin/readMax inclusive windows; sort whitelist
 GET /api/posts/:slug               → PostDetail
-GET /api/search?q&offset&limit&tag&from&to → { total, items: PostSummary[] } // ranked, paginated (/search page); facets as on /api/posts
+GET /api/search?q&offset&limit&tag&from&to&readMin&readMax&sort → { total, items: PostSummary[] } // ranked, paginated (/search page); facets as on /api/posts
 GET /api/search/suggest?q&limit    → { results: PostSummary[] }        // capped launcher (⌘K palette)
 GET /api/photos?limit              → { total, items: Photo[] }         // /gallery masonry
 GET /api/photos/featured           → Photo | 404                       // hero photo; FE is null-tolerant
@@ -68,6 +68,11 @@ Semantics the FE depends on:
 - **`tag` filtering is server-side** (Postgres), repeatable and **OR-matched** (`ANY`):
   the search rail ships the selected set; the FE never filters arrays. `from`/`to` are an
   inclusive window on the post date, applied together with tags (and with `q` on search).
+- **`readMin`/`readMax`** are an inclusive minute window on `readTime` (computed at
+  publish), and **`sort`** accepts `newest|oldest|quickest|longest|relevance`
+  (`relevance` = search scoring, the implicit default when `q` is present). Absent `sort`
+  means curation order — the home feed never sends it, and only an explicit pick
+  re-orders the result set.
 - **`q` search is ranked** (Meilisearch relevance). `total` must be the real
   hit count for the "N posts" line. Suggest = same engine, low cap, no
   pagination; it is the only call a browser makes directly.
