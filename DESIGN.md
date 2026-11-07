@@ -25,9 +25,9 @@ Mirror of `earendil/src/lib/api/client.ts::BlogApi` — **the FE interface is th
 source of truth**; a drift between the two is a bug in whichever moved.
 
 ```
-GET /api/posts?offset&limit&tag    → { total, items: PostSummary[] }
+GET /api/posts?offset&limit&tag&from&to → { total, items: PostSummary[] }  // tag repeatable (OR); from/to inclusive YYYY-MM-DD
 GET /api/posts/:slug               → PostDetail
-GET /api/search?q&offset&limit     → { total, items: PostSummary[] }   // ranked, paginated (/search page)
+GET /api/search?q&offset&limit&tag&from&to → { total, items: PostSummary[] } // ranked, paginated (/search page); facets as on /api/posts
 GET /api/search/suggest?q&limit    → { results: PostSummary[] }        // capped launcher (⌘K palette)
 GET /api/photos?limit              → { total, items: Photo[] }         // /gallery masonry
 GET /api/photos/featured           → Photo | 404                       // hero photo; FE is null-tolerant
@@ -65,7 +65,9 @@ Semantics the FE depends on:
 - **`/api/posts` order is curation.** The home feed renders exactly this order,
   paginated — an explicit rank column, not merely date desc (date is displayed,
   not decided by consumers). `total` reflects the full (tag-filtered) count.
-- **`tag` filtering is server-side** (Postgres). The FE never filters arrays.
+- **`tag` filtering is server-side** (Postgres), repeatable and **OR-matched** (`ANY`):
+  the search rail ships the selected set; the FE never filters arrays. `from`/`to` are an
+  inclusive window on the post date, applied together with tags (and with `q` on search).
 - **`q` search is ranked** (Meilisearch relevance). `total` must be the real
   hit count for the "N posts" line. Suggest = same engine, low cap, no
   pagination; it is the only call a browser makes directly.
