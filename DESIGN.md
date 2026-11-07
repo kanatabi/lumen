@@ -119,7 +119,12 @@ from Postgres by id so the index can never drift the §1 shape.
 - `GET /api/search/suggest` → same engine, `limit` default 8, no pagination
 - typo tolerance on (it's a blog, not a database console)
 
-## 5. Media Serving — ⚠️ OPEN DECISION D1
+## 5. Media Serving — ✅ RESOLVED (D1): extend the SSR relay to `/media/*`
+
+> **Decision (owner, 2026-11-08):** option 1 below — `/media/*` rides the SSR relay,
+> same-origin like `/api/*`. Implemented in BOTH earendil (public media) and mellon
+> (admin previews) when lumen serves real files; §8's upload endpoint and Phase 10 of
+> `INFRA_ARCHITECTURE.md` carry the work. "Exactly one public ingress" stays literally true.
 
 Diagrams, gallery photos, and thumbnails are owned here under `/media/*`, but
 browsers can only reach the frontend's origin, and the SSR relay currently
@@ -152,14 +157,71 @@ FE never assembles media paths.
 
 ## 7. Open Questions
 
-- **D1** — media path (above). Decide before the first real post.
+- ~~**D1** — media path~~ **RESOLVED**: SSR-relay `/media/*` (§5 header); execute in Phase 10.
 - **D2** — RSS: browser fetches `/feed.xml` at the blog origin; needs either a
   thin FE route `/feed.xml` → `API_BASE/api/feed.xml`, or listing the feed
   under D1's relay decision. Recommend bundling with D1.
-- Authoring UI (future `cms.` app): its own doc; its output contract is §1–§3.
-  Publish auth/API design pending.
+- ~~Authoring UI~~ **RESOLVED**: it is **mellon** — see `../mellon/DESIGN.md` (UI-only
+  portal) and §8 below (its write contract). Publish auth = lumen-minted sessions;
+  the `fzr-portal` AppRole lives server-side (§9).
 - Upload pipeline (photo thumbnails/derivatives): deferred until real uploads
   exist; today `Photo` is single-size + natural dims and the FE scales via CSS.
 - Contract changes: coordinated in one commit set — §1 here **and**
   `BlogApi`/types/mock in `earendil`. The FE mock corpus (12 posts, featured
   photo, "queue" search hits) doubles as the acceptance fixture.
+
+## 8. Admin API (mellon's contract)
+
+The write half of the service. **Never consumed by earendil** — the blog's read path is
+§1 only; the portal (`../mellon`) is the sole client, through its same-origin relay
+(UI holds no credentials; doctrine in mellon's DESIGN §2).
+
+Auth: `POST /admin/session` (single-user credentials in → short-TTL bearer out); every
+other endpoint 401s without it. Session state is minted *here*; mellon only carries it.
+
+```
+POST   /admin/session                      → { token, expires_in }
+GET    /admin/posts?status&tag&page        → list incl. drafts (§1 shape + status)
+POST   /admin/posts                        → create draft; body = PostDetail minus
+                                             readTime (derived at publish)
+PUT    /admin/posts/:slug                  → update draft (optimistic-locked rev)
+POST   /admin/posts/:slug/publish          → the §2 unit of work: derivations,
+                                             Postgres row, Meilisearch upsert,
+                                             media GC — one transaction, idempotent
+POST   /admin/posts/:slug/unpublish        → draft state again; FE 404s it
+DELETE /admin/posts/:slug                  → soft-delete (retain media for GC window)
+PUT    /admin/photos  (multipart)          → store under /media, probe natural dims,
+                                             return Photo (§1 shape)
+GET    /admin/tags                         → cloud incl. drafts; counts = published
+POST   /admin/bao/…                        → secrets passthrough (§9; thin, explicit:
+                                             read / versions / cas-write — no proxying
+                                             sys/, no list beyond the policy's mounts)
+```
+
+Rules:
+- **Drafts never leak to §1** — the read API returns published-only, always.
+- Publish input is **raw Markdown with fences intact** (§3): the admin API validates
+  grammar permissively (a broken fence publishes with a warning; the FE reveals source).
+- Contract changes follow the same ritual as §1: one commit set, mirror updated.
+
+## 9. Secrets-plane integration (Bao passthrough)
+
+For the portal's env/secret management (mellon `/secrets`), lumen proxies a **minimal,
+explicit** subset of OpenBao KV v2 — per `INFRA_ARCHITECTURE.md` §5.5:
+
+- Identity: the `fzr-portal` AppRole, bound to worker CIDRs, TTL ≤ 1 h, re-login
+  agent-side; **the secret-id lives only in lumen's env** (ESO-rendered from
+  `bao-approle-credentials`, the §5.6 seed). Mellon never sees it.
+- Exposed operations: list metadata (policy-scoped mounts/paths), read
+  (`/v1/kv/data/<app>/<env>`, `?version=N`), version list (`/v1/kv/metadata/...`),
+  CAS write (`PUT` with `cas`), nothing else. No `sys/`, no unauthenticated paths.
+- Redaction: values never logged (structured logs redact by key); audit is **Bao's own
+  audit devices** — lumen logs the *operation*, not the *payload*.
+- The same client runs the CI drift check (§5.5) — one implementation, two consumers.
+
+## 10. Phase
+
+P0 = §1 read API + §8 admin API (posts/photos/publish core) + §9 (basic secrets
+management). The GitOps/infra tab (Argo status, vortex commit-writer) is **deferred** —
+when it arrives it follows the same doctrine: lumen holds the token, writes go to *git*,
+the cluster keeps taking orders only from Git.
