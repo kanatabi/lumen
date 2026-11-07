@@ -3,8 +3,8 @@
 Part of the [`omicron`](https://github.com/kanatabi/omicron) superproject. The
 REST API + content pipeline that
 [`earendil/`](https://github.com/kanatabi/earendil) (frontend) consumes. The FE
-renders BE payloads **as-is**: ordering, curation, read-times, previews, and
-rendered diagrams are all decisions made here. If the FE ever has to
+renders BE payloads **as-is**: ordering, curation, read-times, and previews are
+decisions made here; diagram rendering is the FE's (Route B, §3). If the FE ever has to
 post-process data, this document was not followed.
 
 Status: **design only** — implementation not started. (A throwaway healthz-only
@@ -30,9 +30,9 @@ GET /api/posts/:slug               → PostDetail
 GET /api/search?q&offset&limit&tag&from&to&readMin&readMax&sort → { total, items: PostSummary[] } // ranked, paginated (/search page); facets as on /api/posts
 GET /api/search/suggest?q&limit    → { results: PostSummary[] }        // capped launcher (⌘K palette)
 GET /api/photos?limit              → { total, items: Photo[] }         // /gallery masonry
-GET /api/photos/featured           → Photo | 404                       // hero photo; FE is null-tolerant
+GET /api/photos/featured           → Photo | 404                       // kept for BE parity; the FE hero is a static identity asset — no consumer today
 GET /api/tags                      → Tag[]                             // home rail cloud: counts + order curated here
-GET /api/feed.xml                  → RSS 2.0                           // absolute URLs built from ORIGIN
+GET /api/feed.xml                  → RSS 2.0                           // absolute URLs built from ORIGIN (FE consumer lands at earendil M8)
 ```
 
 ```
@@ -48,7 +48,7 @@ PostSummary = {
 
 PostDetail  = PostSummary & {
   tags: string[]
-  content: string            // Markdown, ALREADY diagram-rendered (see §3)
+  content: string            // raw Markdown, ```mermaid fences INTACT (§3: FE renders them)
 }
 
 Photo = { src, alt, width, height }   // natural dimensions; mixed aspect ratios are the point
@@ -83,80 +83,29 @@ Semantics the FE depends on:
 ## 2. Publish-time derivations (never request-time)
 
 At publish — not on GET: `readTime` (word count of final content), `preview`
-(explicit author text, default = first paragraph), diagram replacement (§3),
-media garbage-collection, Meilisearch upsert, Postgres row write — one unit of
+(explicit author text, default = first paragraph), media garbage-collection, Meilisearch upsert, Postgres row write — one unit of
 work. Re-publishing unchanged inputs must produce byte-identical outputs so
 deterministic caches (see `immutable` in §5) never invalidate falsely.
 
-## 3. Diagram Rendering (Route A — publish-time, BE-side)
+## 3. Diagram Rendering (Route B — raw fences, FE renders)
 
-> ⚠️ **Stale — reconcile before implementing.** `earendil` has since adopted
-> **Route B** (client-side mermaid; its `AGENTS.md` §7 says the backend ships
-> raw fences, no publish render). This section still describes the original
-> Route A contract. Do not build the publish-render pipeline as-is.
+> **Adopted cross-repo decision.** The client-side pipeline `earendil` shipped (its
+> "Route B": `AGENTS.md` §7, adoption record in its `PLAN.md`) is the contract. The former
+> publish-time SVG rendering described here ("Route A") was evaluated and **rejected** —
+> do NOT build a mermaid render step.
 
-Mermaid is rendered **here, at publish time**, into static SVG. The FE never
-loads mermaid.js, never sees ` ```mermaid ` fences, and needs zero code for
-diagrams: the API's `content` contains ordinary images, so the FE's existing
-prose pipeline gives them framing, lazy-loading, **and click-to-zoom (lightbox)
-for free**.
+The backend's entire job with diagrams: **carry the source through untouched.**
 
-```
-for each ```mermaid fence in content (nth = 1..n):
-    svg = mermaid-cli render(source,
-              securityLevel: "strict",     # no HTML/JS in labels
-              theme: light-card)           # baked colors, see below
-    hash = sha256(svg)[:8]
-    store → /media/diagrams/<slug>-<nth>-<hash>.svg
-    replace fence with: ![<gist alt>](/media/diagrams/<slug>-<nth>-<hash>.svg)
-```
-
-**Theme-transparent output (A-inline contract).** The FE **inlines** these SVGs
-server-side into the SSR'd article HTML (fetch → sanitize → swap for the `<img>`),
-which lets the page's CSS vars theme diagrams in both modes — while the same file
-remains a correct standalone `<img>` for fallbacks. Requirements:
-
-- every paint (fill/stroke/text color) is `var(--diagram-*, <fallback>)` written
-  into **inline `style` attributes** — no `<style>` blocks, and never bare hex in
-  presentation attributes. Fallbacks = the light-card colors, so the asset is
-  right on its own too
-- implementation: pin `@mermaid-js/mermaid-cli`, then post-process with a
-  deterministic palette mapping (known theme hex → `var(--diagram-x, <hex>)`);
-  golden-file tests own the mapping (pin + golden-file is the agreed contract)
-- the var names are the shared BE↔FE contract (FE defines them light + dark,
-  `earendil/src/routes/layout.css`):
-
-| var | role | light | dark |
-| --- | --- | --- | --- |
-| `--diagram-bg` | card/background | `#ffffff` | `#131316` |
-| `--diagram-surface` | node fill | `#f4f4f5` | `#27272a` |
-| `--diagram-ink` | text | `#09090b` | `#fafafa` |
-| `--diagram-muted` | secondary text/arrows | `#71717a` | `#a1a1aa` |
-| `--diagram-line` | strokes/borders | `#e4e4e7` | `#27272a` |
-| `--diagram-accent` | highlighted nodes/labels | `#7c3aed` | `#a78bfa` |
-
-Rules:
-
-- **Standalone-safe**: with the vars absent (plain `<img>`), fallback paints give
-  the baked light card — one asset, both worlds; no separate light/dark renders
-- **`securityLevel: "strict"` stays mandatory**; the FE additionally
-  DOMPurify-sanitizes each SVG before inlining (defense in depth)
-- **No diagram zoom** in the FE (inline SVG isn't an `<img>`; vector renders
-  crisp) — deliberately skipped in v1
-- **Alt = the diagram's semantic gist** ("Request flow through Traefik to SSR
-  pods"), never just "diagram" — it is the lightbox caption and the a11y
-  surface.
-- **Deterministic output** (pinned `@mermaid-js/mermaid-cli` version, stable
-  ids, content-hash filename) ⇒ unchanged source = same bytes = same URL =
-  caches stay valid; changed source = new URL, old asset garbage-collected.
-- **Render failure fails the publish** with a clear error. A raw ` ```mermaid `
-  fence in an API response is a pipeline bug, never user-facing content — the
-  FE's degradation (fence shows as code text) exists only to *surface* that
-  bug.
-- Implementation: mermaid-cli needs headless Chromium → run it as a
-  **Job/sidecar invoked at publish**, never inside the request path.
-- Same recipe generalizes to future math or chart extensions: publish-time
-  render → plain `<img>`.
+- `content` is stored and served as raw Markdown **including ` ```mermaid ` fences** — no
+  rewriting, no pre-validation, no SVG generation. Malformed fences fail gracefully in the
+  FE (the source is revealed), so the API never needs diagram-grammar opinions.
+- One payload serves both palettes: the FE themes from its own token contract (`--diagram-*`
+  → mermaid redux themes) and re-renders on theme flip. The API never needs to know which
+  theme a reader uses.
+- The FE renders client-side: fence → Shiki bypass → SSR placeholder (the shimmer skeleton)
+  → hydration lazy-loads pinned `mermaid@12.2.0` → themed SVG; click → lightbox; JS-off /
+  parse-failure reveal the escaped source. Authoritative description: `earendil`
+  `DESIGN.md` §6.5 + `AGENTS.md` §7.
 
 ## 4. Search Index (Meilisearch)
 
@@ -192,8 +141,8 @@ FE never assembles media paths.
 
 ## 6. Data Model (sketch)
 
-- `posts(id, slug u, title, subtitle, preview, content_md /* with fences */,
-  content_rendered /* §3 applied */, rank, published_at, word_count,
+- `posts(id, slug u, title, subtitle, preview, content_md /* raw Markdown, fences
+  intact — §3 Route B, no rendered variant */, rank, published_at, word_count,
   read_time)`
 - `tags(id, slug u)`, `post_tags`
 - `photos(id, src, alt, width, height, sort, featured bool)` — `featured`
