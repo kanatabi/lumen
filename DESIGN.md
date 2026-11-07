@@ -31,6 +31,7 @@ GET /api/search?q&offset&limit     → { total, items: PostSummary[] }   // rank
 GET /api/search/suggest?q&limit    → { results: PostSummary[] }        // capped launcher (⌘K palette)
 GET /api/photos?limit              → { total, items: Photo[] }         // /gallery masonry
 GET /api/photos/featured           → Photo | 404                       // hero photo; FE is null-tolerant
+GET /api/tags                      → Tag[]                             // home rail cloud: counts + order curated here
 GET /api/feed.xml                  → RSS 2.0                           // absolute URLs built from ORIGIN
 ```
 
@@ -51,9 +52,15 @@ PostDetail  = PostSummary & {
 }
 
 Photo = { src, alt, width, height }   // natural dimensions; mixed aspect ratios are the point
+Tag   = { name: string, posts: number }  // posts = corpus count carrying the tag
 ```
 
 Semantics the FE depends on:
+
+- **`/api/tags` is curation, not aggregation-at-read.** Counts are maintained at
+  publish time (like `readTime`); the BE sorts by `posts` desc with a stable tie
+  order and decides how many tags the cloud ships. The rail renders the payload
+  as-is — the FE never counts, filters, or sorts.
 
 - **`/api/posts` order is curation.** The home feed renders exactly this order,
   paginated — an explicit rank column, not merely date desc (date is displayed,
