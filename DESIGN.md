@@ -123,6 +123,8 @@ from Postgres by id so the index can never drift the §1 shape.
   `id, alt, collection, gallery`; searchable `alt^2, collection` — the
   vocabulary curators actually remember. Public §1 search never reads it;
   gallery=false photos may, because the admin palette must find everything.
+  The §8 `tags` group does NOT ride the index — vocabulary prefix match comes
+  straight from Postgres (name lookup, not relevance search).
 
 ## 5. Media Serving — ✅ RESOLVED (D1) **revised**: object storage + CDN, upload via lumen
 
@@ -245,12 +247,17 @@ POST   /admin/tags                         → create a vocabulary entry; name i
                                              slugified, 409 on duplicates — the
                                              portal creates eagerly, saves never
                                              guess which names are new
-GET    /admin/search?q                     → { posts, photos } — the palette's
-                                             content door: posts incl. drafts,
-                                             photos matched on alt + collection;
-                                             ≤8 each, no pagination (it's a
-                                             finder, not a browse axis). The
-                                             public §1 search stays posts-only
+GET    /admin/search?q                     → { posts, photos, tags } — the
+                                             palette's content door: posts incl.
+                                             drafts (Meilisearch), photos on alt +
+                                             collection (§4 admin index), and tags
+                                             as a VOCABULARY prefix match from
+                                             Postgres — a name lookup, not a
+                                             relevance search; selecting one
+                                             filters the post list, never opens a
+                                             tag page. ≤8 each, no pagination
+                                             (finder, not browse axis). Public §1
+                                             search stays posts-only
 POST   /admin/bao/…                        → secrets passthrough (§9; thin, explicit:
                                              read / versions / cas-write — no proxying
                                              sys/, no list beyond the policy's mounts)
