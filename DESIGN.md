@@ -158,6 +158,11 @@ the relay-upload ingestion path instead of direct browser→bucket credentials.
 - `posts(id, slug u, title, subtitle, preview, content_md /* raw Markdown, fences
   intact — §3 Route B, no rendered variant */, rank, published_at, word_count,
   read_time)`
+- `users(username u, passhash /* argon2id + per-user salt (owner decision
+  2026-11-08: credentials move from env/Bao to the DB, hashed; env-credential era
+  superseded — the Bao seed now holds only the JWT signing key) */, token_version
+  /* bumped by logout; every JWT carries `tv` and must match */)` — one row today,
+  the shape stays multi-user-honest without RBAC being real (Parked in mellon PLAN)
 - `tags(id, slug u)`, `post_tags`
 - `photos(id, src, alt, width, height, sort, featured bool, gallery bool, collection)`
   — `featured` answers `GET /api/photos/featured`; **`gallery` is the public
@@ -191,17 +196,41 @@ The write half of the service. **Never consumed by earendil** — the blog's rea
 §1 only; the portal (`../mellon`) is the sole client, through its same-origin relay
 (UI holds no credentials; doctrine in mellon's DESIGN §2).
 
-Auth: `POST /admin/session` (single-user credentials in → short-TTL bearer out); every
-other endpoint 401s without it. Session state is minted *here*; mellon only carries it.
+Auth (owner decisions, 2026-11-08): **JWT sessions**. `POST /admin/session` checks
+credentials (argon2id, `users.passhash` — §6) and mints an HS256 token, claims
+`{ sub, iat, exp, tv, jti }`: **TTL 12h**, `tv` = the user's `token_version`, `jti` a
+random id. Verification = pinned-HS256 signature (no `alg` negotiation — the classic
+JWT foot-guns stay shut) **AND** one indexed row read (`tv` match). That read buys what
+pure statelessness cannot: **real revocation** — logout bumps `token_version` and every
+outstanding token for the account dies instantly. Revocation is non-negotiable because
+the portal is PUBLIC (`console.gofar.id`, INFRA amendment 2026-11-08); a stolen 12h
+bearer must not outlive the logout button. **No refresh tokens** (owner ruling: re-login
+at 12h is the design — rotation machinery is not worth its theft surface for one user).
+The signing key is `SESSION_JWT_SECRET` (32 bytes, generated at bootstrap, lives in
+Bao `lumen/{env}` — §5-of-INFRA seed list; never in git). The public login endpoint
+MUST be throttled (§8 rules) — single user + public URL makes credential stuffing *the*
+attack; argon2id makes each guess expensive, the throttle makes them rare. Session
+state is minted *here*; mellon only carries it (cookie + relay), and honors
+`expires_in` for its cookie lifetime.
 
 ```
-POST   /admin/session                      → { token, expires_in }
+POST   /admin/session                      → { token: JWT, expires_in } (seconds —
+                                             mellon sets its cookie maxAge from it)
+DELETE /admin/session                      → 204: bumps users.token_version (revoking
+                                             every outstanding token) — mellon calls
+                                             it best-effort at "end session", then
+                                             clears its cookie regardless (the cookie
+                                             is the portal's; the REVOCATION is ours)
 GET    /admin/posts?status&tag&sort&dir&page → paged envelope { total, items, page,
                                              pageSize } (§1 shape + status; sort =
                                              updated|created|published|title, dir =
                                              asc|desc, default updated/desc, page
                                              1-based clamp, pageSize 20; rows carry
                                              createdAt + publishedAt|null)
+GET    /admin/posts/:slug                  → the editor's door: FULL detail incl.
+                                             drafts/unpublished, rev, createdAt/
+                                             publishedAt/updatedAt (§1 shape + admin
+                                             fields); 404 honest
 POST   /admin/posts                        → create draft; body = PostDetail minus
                                              readTime (derived at publish)
 PUT    /admin/posts/:slug                  → update draft (optimistic-locked rev)
@@ -258,12 +287,25 @@ GET    /admin/search?q                     → { posts, photos, tags } — the
                                              tag page. ≤8 each, no pagination
                                              (finder, not browse axis). Public §1
                                              search stays posts-only
-POST   /admin/bao/…                        → secrets passthrough (§9; thin, explicit:
-                                             read / versions / cas-write — no proxying
-                                             sys/, no list beyond the policy's mounts)
+GET    /admin/bao/paths                    → list metadata, policy-scoped mounts only
+                                             (§9 — the portal's env/app picker)
+GET    /admin/bao/:app/:env                → read current data (?version=N for a pin)
+GET    /admin/bao/:app/:env/metadata       → version list (history panel, CAS numbers)
+PUT    /admin/bao/:app/:env                → CAS write ({data, cas}); returns the new
+                                             version. The FOUR operations above are
+                                             the ENTIRE surface (§9: thin, explicit —
+                                             no proxying sys/, nothing else added at
+                                             any time)
 ```
 
 Rules:
+- **Login throttle** (public-console era): per-IP + per-account exponential backoff on
+  `POST /admin/session`, with structured-log audit of failures (no payloads, §9
+  redaction). The edge rate-limit middleware (INFRA Phase 3) is the coarse first layer;
+  this is the real gate.
+- **JWT verification is pinned**: HS256 only, `exp`+`tv` always checked, `typ` asserted,
+  key from `SESSION_JWT_SECRET` — a `None`/RS256-confusion token must fail at the
+  library-config level, not at review time.
 - **Drafts never leak to §1** — the read API returns published-only, always.
 - Publish input is **raw Markdown with fences intact** (§3): the admin API validates
   grammar permissively (a broken fence publishes with a warning; the FE reveals source).
