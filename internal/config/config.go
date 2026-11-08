@@ -17,12 +17,13 @@ import (
 )
 
 type Config struct {
-	Port        string // default 8080
-	DBURL       string // postgres://… (required unless Fixture)
-	Origin      string // absolute base (feed/D2 later; unused in M1)
-	FixturePath string // dev escape hatch: in-memory twin instead of Postgres
-	MeiliURL    string // read-serving engine (§4) — required for the real path
-	MeiliKey    string // master key (dev placeholder in compose; Bao in prod)
+	Port          string // default 8080
+	DBURL         string // postgres://… (required unless Fixture)
+	Origin        string // absolute base (feed/D2 later; unused in M1)
+	FixturePath   string // dev escape hatch: in-memory twin instead of Postgres
+	MeiliURL      string // read-serving engine (§4) — required for the real path
+	MeiliKey      string // master key (dev placeholder in compose; Bao in prod)
+	SessionSecret string // HS256 key, 32B, Bao lumen/{env} — admin surface (§8)
 }
 
 // Load reads configuration. searchPath is an optional explicit env.yaml path
@@ -38,7 +39,7 @@ func Load() (Config, error) {
 	// it; vortex manifests will too) — bind BOTH names, LUMEN_-prefixed wins
 	// by convention, plain PORT by reality. Multiple names = ordered fallback.
 	_ = v.BindEnv("port", "LUMEN_PORT", "PORT")
-	for _, key := range []string{"db_url", "origin", "fixture", "config", "meili_url", "meili_key"} {
+	for _, key := range []string{"db_url", "origin", "fixture", "config", "meili_url", "meili_key", "session_jwt_secret"} {
 		_ = v.BindEnv(key)
 	}
 
@@ -57,15 +58,21 @@ func Load() (Config, error) {
 	}
 
 	c := Config{
-		Port:        v.GetString("port"),
-		DBURL:       v.GetString("db_url"),
-		Origin:      v.GetString("origin"),
-		FixturePath: v.GetString("fixture"),
-		MeiliURL:    v.GetString("meili_url"),
-		MeiliKey:    v.GetString("meili_key"),
+		Port:          v.GetString("port"),
+		DBURL:         v.GetString("db_url"),
+		Origin:        v.GetString("origin"),
+		FixturePath:   v.GetString("fixture"),
+		MeiliURL:      v.GetString("meili_url"),
+		MeiliKey:      v.GetString("meili_key"),
+		SessionSecret: v.GetString("session_jwt_secret"),
 	}
 	if c.DBURL == "" && c.FixturePath == "" {
 		return c, fmt.Errorf("db_url (LUMEN_DB_URL) required (or fixture/LUMEN_FIXTURE for offline dev)")
+	}
+	if c.DBURL != "" && c.SessionSecret == "" {
+		// fail-fast: an admin surface without a signing key is a config bug,
+		// not a feature to discover at first login
+		return c, fmt.Errorf("session_jwt_secret (LUMEN_SESSION_JWT_SECRET) required with Postgres")
 	}
 	return c, nil
 }

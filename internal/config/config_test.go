@@ -8,6 +8,7 @@ import (
 
 func TestDefaultsAndEnv(t *testing.T) {
 	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
+	t.Setenv("LUMEN_SESSION_JWT_SECRET", "test-secret")
 	t.Setenv("LUMEN_FIXTURE", "")
 	t.Setenv("LUMEN_CONFIG", "")
 	t.Setenv("PORT", "")
@@ -31,8 +32,19 @@ func TestDefaultsAndEnv(t *testing.T) {
 	}
 }
 
+func TestPostgresRequiresSessionSecret(t *testing.T) {
+	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
+	t.Setenv("LUMEN_SESSION_JWT_SECRET", "")
+	t.Setenv("LUMEN_FIXTURE", "")
+	t.Setenv("LUMEN_CONFIG", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected fail-fast: Postgres without a signing secret")
+	}
+}
+
 func TestRequiresDBOrFixture(t *testing.T) {
 	t.Setenv("LUMEN_DB_URL", "")
+	t.Setenv("LUMEN_SESSION_JWT_SECRET", "")
 	t.Setenv("LUMEN_FIXTURE", "")
 	t.Setenv("LUMEN_CONFIG", "")
 	// also ensure no stray ./env.yaml in the package dir can satisfy it
@@ -50,7 +62,7 @@ func TestRequiresDBOrFixture(t *testing.T) {
 func TestFileFillsEnvWins(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "env.yaml")
-	if err := os.WriteFile(file, []byte("db_url: postgres://file/db\norigin: https://from.file\n"), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte("db_url: postgres://file/db\norigin: https://from.file\nsession_jwt_secret: file-secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LUMEN_CONFIG", file)
@@ -60,7 +72,7 @@ func TestFileFillsEnvWins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.DBURL != "postgres://file/db" || c.Origin != "https://from.file" {
+	if c.DBURL != "postgres://file/db" || c.Origin != "https://from.file" || c.SessionSecret != "file-secret" {
 		t.Fatalf("file not applied: %+v", c)
 	}
 

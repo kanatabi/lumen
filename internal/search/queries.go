@@ -111,7 +111,17 @@ func idsOf(res *meili.SearchResponse) []int64 {
 }
 
 func postFilter(q domain.ListQuery) string {
-	parts := []string{"status = published"} // EVERY public query carries the leak rule
+	// EVERY public query carries the leak rule first
+	return joinAnd(append([]string{"status = published"}, facetClauses(q)...))
+}
+
+func joinAnd(parts []string) string { return strings.Join(parts, " AND ") }
+
+// facetClauses: the §1 facets without the status rule — shared by the
+// public filter (postFilter prepends status) and the admin door (which
+// deliberately omits it).
+func facetClauses(q domain.ListQuery) []string {
+	parts := []string{}
 	if len(q.Tags) > 0 {
 		quoted := make([]string, len(q.Tags))
 		for i, t := range q.Tags {
@@ -131,7 +141,7 @@ func postFilter(q domain.ListQuery) string {
 	if q.ReadMax != nil {
 		parts = append(parts, "readTime <= "+strconv.Itoa(*q.ReadMax))
 	}
-	return strings.Join(parts, " AND ")
+	return parts
 }
 
 // postSort maps §1 sort to sortable attributes. Relevance (q present, no

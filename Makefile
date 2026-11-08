@@ -22,9 +22,10 @@ run:                   ## serve §1 on :8080 against dev postgres
 test:                  ## offline gate: unit + harness against the in-memory twin
 	go test ./...
 
-test-integration: up     ## same harness against REAL postgres (§1 truth check)
+test-integration: up     ## the SAME suites against real Postgres + Meilisearch (incl. §8 lifecycle)
 	go run ./cmd/seed
-	LUMEN_INTEGRATION=1 go test -count=1 ./internal/httpapi/ -run Integration
+	LUMEN_INTEGRATION=1 LUMEN_MEILI_URL=$(LUMEN_MEILI_URL) LUMEN_MEILI_KEY=$(LUMEN_MEILI_KEY) go test -count=1 ./...
+	go run ./cmd/seed   ## the admin lifecycle mutates the corpus — restore it for whatever follows
 
 contract:                  ## the earendil-side gate: real vitest against a RUNNING lumen (make run first)
 	@curl -sf http://localhost:8080/readyz >/dev/null || { echo "lumen not reachable on :8080 — run 'make run' in another shell"; exit 1; }

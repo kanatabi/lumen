@@ -21,12 +21,15 @@ import (
 )
 
 type Server struct {
-	svc *service.Service
-	eng *search.Service
+	svc         *service.Service
+	eng         *search.Service // nil in fixture mode (readyz says so)
+	engineAdmin *search.Service // same pointer; admin door methods live on it
+	admin       *AdminDeps      // nil ⇒ no /admin surface at all
 }
 
-func New(svc *service.Service, eng *search.Service) *Server {
-	return &Server{svc: svc, eng: eng}
+// New: svc/eng for the public §1 surface; admin (nil-able) mounts §8.
+func New(svc *service.Service, eng *search.Service, admin *AdminDeps) *Server {
+	return &Server{svc: svc, eng: eng, engineAdmin: eng, admin: admin}
 }
 
 // jsonOnly declares intent, not protection — the header is set per response by
@@ -89,5 +92,8 @@ func (s *Server) Router() http.Handler {
 		// /api/feed.xml: D2 open question + FE consumer lands at earendil M8 —
 		// deliberately absent until its path is decided.
 	})
+
+	// §8 admin surface (sessions minted here; mellon carries them)
+	s.mountAdmin(r)
 	return r
 }

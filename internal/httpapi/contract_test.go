@@ -56,7 +56,7 @@ func memRouter(tb testing.TB) http.Handler {
 	if !ok {
 		tb.Fatal("twin must implement the engine seam")
 	}
-	return httpapi.New(service.New(src, eng), nil).Router() // twin serves both seams, offline
+	return httpapi.New(service.New(src, eng), nil, nil).Router() // twin serves both seams, offline
 }
 
 // runContractSuite is THE harness. strictRelevance=true asserts the mock's
@@ -479,7 +479,7 @@ func TestContract_Integration_Postgres(t *testing.T) {
 	if err := eng.Ensure(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	h := httpapi.New(service.New(store.NewPG(pool), eng), eng).Router()
+	h := httpapi.New(service.New(store.NewPG(pool), eng), eng, nil).Router()
 	// engine tier: relevance ordering belongs to Meilisearch (§4)
 	runContractSuite(t, h, false)
 }
