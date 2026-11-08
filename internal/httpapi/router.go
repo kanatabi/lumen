@@ -9,17 +9,25 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/service"
 )
 
-type Server struct{ svc *service.Service }
+type Server struct {
+	svc *service.Service
+	eng *search.Service
+}
 
-func New(svc *service.Service) *Server { return &Server{svc: svc} }
+func New(svc *service.Service, eng *search.Service) *Server {
+	return &Server{svc: svc, eng: eng}
+}
 
 // jsonOnly declares intent, not protection — the header is set per response by
 // writeJSON anyway; healthz stays plain.
@@ -52,6 +60,22 @@ func (s *Server) Router() http.Handler {
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
+	})
+	// /readyz is the probe with opinions: Postgres (truth) AND the engine
+	// (read path) must ANSWER. Fixture dev mode has no engine — say so
+	// honestly with a 503, never fake readiness.
+	r.Get("/readyz", func(w http.ResponseWriter, rq *http.Request) {
+		ctx, cancel := context.WithTimeout(rq.Context(), 2*time.Second)
+		defer cancel()
+		if s.eng == nil {
+			writeErr(w, http.StatusServiceUnavailable, "engine not configured (fixture mode)")
+			return
+		}
+		if err := s.eng.Ready(ctx); err != nil {
+			writeErr(w, http.StatusServiceUnavailable, "engine unreachable")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
 
 	r.Route("/api", func(api chi.Router) {

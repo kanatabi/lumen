@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kanatabi/lumen/internal/domain"
+	"github.com/kanatabi/lumen/internal/search"
 )
 
 // PG is the Postgres Source. One hard rule lives in its SQL: status =
@@ -94,6 +95,91 @@ func (g *PG) TagCloud(ctx context.Context) ([]domain.Tag, error) {
 }
 
 var _ Source = (*PG)(nil)
+
+// ---- doc lookups for the indexing worker (truth read at RUN time — jobs
+// carry ids only, so retries naturally coalesce to current state) ----
+
+func (g *PG) PostDocByID(ctx context.Context, id int64) (search.PostDoc, bool, error) {
+	var d search.PostDoc
+	var status string
+	var tags []string
+	err := g.pool.QueryRow(ctx, `
+		SELECT p.id, p.slug, p.title, p.subtitle, p.preview, p.content_md,
+		       p.status::text, EXTRACT(YEAR FROM p.date)::int*10000
+		         + EXTRACT(MONTH FROM p.date)::int*100 + EXTRACT(DAY FROM p.date)::int,
+		       to_char(p.date,'YYYY-MM-DD'), p.read_time, p.rank,
+		       COALESCE(
+		         (SELECT array_agg(t.name ORDER BY pt.position)
+		            FROM post_tags pt JOIN tags t ON t.id = pt.tag_id
+		           WHERE pt.post_id = p.id),
+		         '{}')
+		FROM posts p
+		WHERE p.id = $1`, id).
+		Scan(&d.ID, &d.Slug, &d.Title, &d.Subtitle, &d.Preview, &d.Content,
+			&status, &d.Day, &d.Date, &d.ReadTime, &d.Rank, &tags)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return search.PostDoc{}, false, nil
+		}
+		return search.PostDoc{}, false, err
+	}
+	d.Status = status
+	d.Tags = tags
+	return d, true, nil
+}
+
+func (g *PG) PhotoDocByID(ctx context.Context, id int64) (search.PhotoDoc, bool, error) {
+	var p search.PhotoDoc
+	var collection *string
+	err := g.pool.QueryRow(ctx,
+		`SELECT id, src, alt, width, height, gallery, featured, sort, collection
+		 FROM photos WHERE id = $1`, id).
+		Scan(&p.ID, &p.Src, &p.Alt, &p.Width, &p.Height, &p.Gallery, &p.Featured,
+			&p.Sort, &collection)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return search.PhotoDoc{}, false, nil
+		}
+		return search.PhotoDoc{}, false, err
+	}
+	p.Collection = collection
+	return p, true, nil
+}
+
+// AllPostIDs / AllPhotoIDs drive cmd/index-init (full reconcile).
+func (g *PG) AllPostIDs(ctx context.Context) ([]int64, error) {
+	rows, err := g.pool.Query(ctx, `SELECT id FROM posts ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+func (g *PG) AllPhotoIDs(ctx context.Context) ([]int64, error) {
+	rows, err := g.pool.Query(ctx, `SELECT id FROM photos ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
 
 // GetPost keeps the 404 distinction at the data edge for callers that want it
 // (the service uses the loaded set; this exists for the integration harness

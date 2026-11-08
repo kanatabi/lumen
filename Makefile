@@ -1,5 +1,9 @@
 LUMEN_DB_URL ?= postgres://lumen:lumen-dev@localhost:5433/lumen?sslmode=disable
+LUMEN_MEILI_URL ?= http://localhost:7700
+LUMEN_MEILI_KEY ?= dev-meili-key
 export LUMEN_DB_URL
+export LUMEN_MEILI_URL
+export LUMEN_MEILI_KEY
 
 .PHONY: up down seed run test test-integration contract tidy
 

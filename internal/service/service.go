@@ -11,12 +11,18 @@ import (
 	"strings"
 
 	"github.com/kanatabi/lumen/internal/domain"
+	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/store"
 )
 
-type Service struct{ src store.Source }
+type Service struct {
+	src store.Source
+	// eng is the read-serving engine (§4 ruling). The read-path swap lands
+	// with it in this milestone's second commit — the seam exists first.
+	eng *search.Service
+}
 
-func New(src store.Source) *Service { return &Service{src: src} }
+func New(src store.Source, eng *search.Service) *Service { return &Service{src: src, eng: eng} }
 
 func summarize(d domain.Detail) domain.Summary {
 	return domain.Summary{

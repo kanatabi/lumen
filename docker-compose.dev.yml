@@ -18,5 +18,16 @@ services:
       timeout: 3s
       retries: 20
 
+  meili:
+    image: getmeili/meilisearch:v1.56.1   # pinned — tags are immutable contracts
+    environment:
+      MEILI_MASTER_KEY: dev-meili-key     # local-dev placeholder, never reused
+      MEILI_ENV: development
+    ports:
+      - "7700:7700"
+    volumes:
+      - meilidata:/meili_data
+
 volumes:
   pgdata:
+  meilidata:

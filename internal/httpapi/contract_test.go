@@ -42,7 +42,7 @@ func memRouter(tb testing.TB) http.Handler {
 	if err != nil {
 		tb.Fatal(err)
 	}
-	return httpapi.New(service.New(src)).Router()
+	return httpapi.New(service.New(src, nil), nil).Router() // offline twin: no engine yet (commit 2 swaps the read path)
 }
 
 // runContractSuite is THE harness: one body, both stores.
@@ -428,6 +428,6 @@ func TestContract_Integration_Postgres(t *testing.T) {
 	if err := pool.Ping(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	h := httpapi.New(service.New(store.NewPG(pool))).Router()
+	h := httpapi.New(service.New(store.NewPG(pool), nil), nil).Router()
 	runContractSuite(t, h)
 }
