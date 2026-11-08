@@ -29,7 +29,7 @@ GET /api/posts?offset&limit&tag&from&to&readMin&readMax&sort → { total, items:
 GET /api/posts/:slug               → PostDetail
 GET /api/search?q&offset&limit&tag&from&to&readMin&readMax&sort → { total, items: PostSummary[] } // ranked, paginated (/search page); facets as on /api/posts
 GET /api/search/suggest?q&limit    → { results: PostSummary[] }        // capped launcher (⌘K palette)
-GET /api/photos?limit              → { total, items: Photo[] }         // /gallery masonry
+GET /api/photos?limit              → { total, items: Photo[] }         // /gallery masonry — BE serves gallery=true ONLY (curation flag; collection is admin-internal and never filters this list)
 GET /api/photos/featured           → Photo | 404                       // kept for BE parity; the FE hero is a static identity asset — no consumer today
 GET /api/tags                      → Tag[]                             // home rail cloud: counts + order curated here
 GET /api/feed.xml                  → RSS 2.0                           // absolute URLs built from ORIGIN (FE consumer lands at earendil M8)
@@ -152,8 +152,12 @@ the relay-upload ingestion path instead of direct browser→bucket credentials.
   intact — §3 Route B, no rendered variant */, rank, published_at, word_count,
   read_time)`
 - `tags(id, slug u)`, `post_tags`
-- `photos(id, src, alt, width, height, sort, featured bool)` — `featured`
-  answers `GET /api/photos/featured`
+- `photos(id, src, alt, width, height, sort, featured bool, gallery bool, collection)`
+  — `featured` answers `GET /api/photos/featured`; **`gallery` is the public
+  curation flag** (uploads default false; only `gallery=true` reaches §1);
+  `collection` is admin-internal theming (null = uncategorized)
+- `collections(id, name u)` — curation vocabulary, admin-internal: the blog does
+  NOT browse by collection (yet); public list ignores it entirely
 - `media_assets(id, path u, sha256, kind, post_slug, nth, created_at)` — GC
   rows on re-render
 
@@ -202,7 +206,15 @@ DELETE /admin/posts/:slug                  → soft-delete (retain media for GC 
 POST   /admin/photos  (multipart)          → relay to object store (§5): probe dims
                                              + strip EXIF server-side BEFORE the
                                              object is public, return Photo with the
-                                             absolute CDN src (§1 shape)
+                                             absolute CDN src (§1 shape); fresh
+                                             photos: gallery=false, collection=null
+PATCH  /admin/photos/:id                   → curation metadata {alt?, collection?,
+                                             gallery?}; last-write-wins (photos carry
+                                             no rev — single-author album truth)
+GET    /admin/collections                  → curation vocabulary (name + photo count;
+                                             admin-internal — no public browse axis)
+POST   /admin/collections                  → create a collection; name slugified,
+                                             409 on duplicates (same semantics as tags)
 GET    /admin/tags                         → vocabulary (every created tag, used
                                              or not; counts = published posts)
 POST   /admin/tags                         → create a vocabulary entry; name is
