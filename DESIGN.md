@@ -224,6 +224,17 @@ POST   /admin/photos  (multipart)          → relay to object store (§5): prob
 PATCH  /admin/photos/:id                   → curation metadata {alt?, collection?,
                                              gallery?}; last-write-wins (photos carry
                                              no rev — single-author album truth)
+GET    /admin/photos/:id                   → single photo (the portal's detail page;
+                                             404 honest)
+GET    /admin/photos/:id/references        → posts whose content embeds the photo's
+                                             src (content scan). Feeds the delete
+                                             dialog's warn-list — deletion is NEVER
+                                             blocked; the human decides with full
+                                             information (owner call 2026-11-08)
+DELETE /admin/photos/:id                   → removes the library row; the OBJECT keeps
+                                             serving until storage GC (§5 lifecycle) —
+                                             citing posts show a broken picture until
+                                             edited
 GET    /admin/collections                  → curation vocabulary (name + photo count;
                                              admin-internal — no public browse axis)
 POST   /admin/collections                  → create a collection; name slugified,
