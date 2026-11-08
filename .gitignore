@@ -7,11 +7,13 @@
 !env.yaml.sample
 *.local
 
-# build artifacts
+# build artifacts — ROOT-ANCHORED (/lumen) on purpose: bare names match at
+# ANY depth and silently ate cmd/lumen & cmd/seed for the whole milestone
+# (branch audit caught it; a clone of the branch would not have compiled)
 /bin/
 /dist/
-lumen
-seed
+/lumen
+/seed
 
 # local data
 pgdata/
