@@ -203,6 +203,11 @@ POST   /admin/posts/:slug/unpublish        → unpublished (the §4 machine: dra
                                              published ⇄ unpublished; a shipped post
                                              NEVER returns to draft); 409 otherwise
 DELETE /admin/posts/:slug                  → soft-delete (retain media for GC window)
+GET    /admin/photos?collection&gallery&from&to&sort&dir → curation list (collection
+                                             repeated = OR, 'uncategorized' = null
+                                             bucket; from/to inclusive on createdAt;
+                                             sort = created|title|collection,
+                                             default created/desc)
 POST   /admin/photos  (multipart)          → relay to object store (§5): probe dims
                                              + strip EXIF server-side BEFORE the
                                              object is public, return Photo with the
