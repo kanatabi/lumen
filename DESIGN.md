@@ -114,7 +114,27 @@ Index `posts`; documents carry display fields only
 indexed as searchable-only (never returned). Result pages hydrate summaries
 from Postgres by id so the index can never drift the §1 shape.
 
-- searchable & boosted: `title^3, subtitle^2, tags, preview, content`
+- **Serving model (owner ruling, 2026-11-08):** Meilisearch is the READ PATH —
+  `GET /api/posts`, `GET /api/photos` and both search faces answer from the engine;
+  Postgres is the source of truth: writes, point reads (slug, featured, vocabulary)
+  and hydration. Hydration RE-CHECKS truth (published/gallery at the DB edge too),
+  so a lagging index can at worst omit a just-committed row — never leak one.
+  Failure posture: **pure engine** — lists/search 503 when it is down, loudly; no
+  silent Postgres fallback, no untested dual path.
+- **Async indexing (same ruling; river v0.51.1):** the queue IS Postgres tables;
+  index jobs commit transactionally INSIDE §2's publish unit of work (InsertTx —
+  "row written but index job lost" becomes structurally impossible, and no Redis
+  enters the 2 GB budget). Jobs carry IDS only; workers re-read current truth, so
+  retries converge, edit bursts coalesce (uniqueness by args), and vanished rows
+  delete their docs — the index reconciles toward Postgres, never away from it.
+  The visible cost is honest: the feed is a projection, consistency window equals
+  the drain time (sub-second local; seed/tests drain before asserting).
+- searchable & boosted: `title^3, subtitle^2, tags, preview, content` — attribute
+  ORDER is the mechanism; `content` is searchable-but-never-returned (display
+  truth is hydrated — §4's original promise kept structural); `rank`, `day`
+  (yyyymmdd int) and `readTime` are SORTABLE attributes, so curation determinism
+  survives the engine; relevance ordering is the engine's own (contract assertions
+  for search/suggest moved to rules — the mock's naive score is a fixture, not the spec)
 - `GET /api/search` → ranked + paginated + exact `total`
 - `GET /api/search/suggest` → same engine, `limit` default 8, no pagination
 - typo tolerance on (it's a blog, not a database console)
@@ -142,6 +162,19 @@ from Postgres by id so the index can never drift the §1 shape.
 > (`mellon/PLAN.md` HUMAN-GATE ledger); values (bucket, endpoint, CDN base, creds)
 > live in Bao per §5-of-INFRA, schema in `env.yaml.sample`.
 
+Keys are content-addressed — `media/<sha[:2]>/<sha>.<ext>` after a decode-and-
+REBUILD pass (EXIF and every ancillary chunk die by construction: the re-encoded
+artifact carries what the encoder writes, not what arrived — proven by a test that
+splices a fake APP1/Exif segment and demands its absence in the output). Same bytes
+⇒ same key forever, so `immutable` Cache-Control here is honest and dedupe is free.
+DEV ENDPOINT: gofakes3 — embedded in the integration battery, `make devs3` for the
+manual loop; MinIO withdrew its public images and LocalStack v4+ demands an auth
+token (2025's registry rug-pull), and the relay speaks real SigV4 S3 regardless:
+HUMAN-GATE #9 stays a VALUES decision (Bao config), never an architecture one.
+Formats pinned jpeg|png, loud 415 elsewhere (webp awaits a trusted encoder —
+recorded, not silently dropped); 20 MiB cap; the content type is what the DECODE
+says, never the client's header.
+
 Diagrams, gallery photos, and thumbnails are owned here; API responses carry URLs
 **the FE renders unchanged** — the FE never assembles media paths (unchanged rule,
 now pointing at the CDN instead of the relay).
@@ -155,23 +188,34 @@ the relay-upload ingestion path instead of direct browser→bucket credentials.
 
 ## 6. Data Model (sketch)
 
-- `posts(id, slug u, title, subtitle, preview, content_md /* raw Markdown, fences
-  intact — §3 Route B, no rendered variant */, rank, published_at, word_count,
-  read_time)`
+- `posts(id, slug, title, subtitle, preview, content_md /* raw Markdown, fences
+  intact — §3 Route B, no rendered variant */, rank, status ENUM, rev, date,
+  published_at, word_count, read_time, thumbnail, deleted_at, content_hash)`
+  — realized (M3): `deleted_at` soft-deletes and slug uniqueness is PARTIAL
+  (`WHERE deleted_at IS NULL`): deleting FREES the slug while history keeps its
+  row for the GC window; `content_hash` makes §2's re-publish idempotence
+  checkable (byte-identical input = no-op, rank unmoved)
 - `users(username u, passhash /* argon2id + per-user salt (owner decision
   2026-11-08: credentials move from env/Bao to the DB, hashed; env-credential era
   superseded — the Bao seed now holds only the JWT signing key) */, token_version
   /* bumped by logout; every JWT carries `tv` and must match */)` — one row today,
   the shape stays multi-user-honest without RBAC being real (Parked in mellon PLAN)
-- `tags(id, slug u)`, `post_tags`
+- `tags(id, name u, posts, cloud)`, `post_tags(post_id, tag_id, position)`
+  — counts publish-maintained (§1, never aggregated at read); `cloud` is curated
+  MEMBERSHIP distinct from FK vocabulary (the earendil cloud ships a curated
+  subset — vocabulary rows exist so links can point somewhere; only cloud=true
+  rows serve `/api/tags`); `position` preserves author-declared tag ORDER — the
+  first live diff against the mock proved tag order is payload, not alphabet
 - `photos(id, src, alt, width, height, sort, featured bool, gallery bool, collection)`
   — `featured` answers `GET /api/photos/featured`; **`gallery` is the public
   curation flag** (uploads default false; only `gallery=true` reaches §1);
   `collection` is admin-internal theming (null = uncategorized)
 - `collections(id, name u)` — curation vocabulary, admin-internal: the blog does
   NOT browse by collection (yet); public list ignores it entirely
-- `media_assets(id, path u, sha256, kind, post_slug, nth, created_at)` — GC
-  rows on re-render
+- `media_assets(id, path u, sha256, kind, post_slug, nth, created_at)` — the M5
+  upload relay writes `kind='upload'` rows (content-addressed path + hash = the
+  dedupe and the GC handle in one); fenced-media rows land with the publish
+  pipeline's hardening pass
 
 ## 7. Open Questions
 
