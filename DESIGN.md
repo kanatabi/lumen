@@ -189,10 +189,12 @@ other endpoint 401s without it. Session state is minted *here*; mellon only carr
 
 ```
 POST   /admin/session                      → { token, expires_in }
-GET    /admin/posts?status&tag&sort&dir&page → list incl. drafts (§1 shape + status;
-                                             sort = updated|created|published|title,
-                                             dir = asc|desc, default updated/desc;
-                                             rows carry createdAt + publishedAt|null)
+GET    /admin/posts?status&tag&sort&dir&page → paged envelope { total, items, page,
+                                             pageSize } (§1 shape + status; sort =
+                                             updated|created|published|title, dir =
+                                             asc|desc, default updated/desc, page
+                                             1-based clamp, pageSize 20; rows carry
+                                             createdAt + publishedAt|null)
 POST   /admin/posts                        → create draft; body = PostDetail minus
                                              readTime (derived at publish)
 PUT    /admin/posts/:slug                  → update draft (optimistic-locked rev)
@@ -203,11 +205,12 @@ POST   /admin/posts/:slug/unpublish        → unpublished (the §4 machine: dra
                                              published ⇄ unpublished; a shipped post
                                              NEVER returns to draft); 409 otherwise
 DELETE /admin/posts/:slug                  → soft-delete (retain media for GC window)
-GET    /admin/photos?collection&gallery&from&to&sort&dir → curation list (collection
+GET    /admin/photos?collection&gallery&from&to&sort&dir&page → paged envelope
+                                             { total, items, page, pageSize } (collection
                                              repeated = OR, 'uncategorized' = null
                                              bucket; from/to inclusive on createdAt;
-                                             sort = created|title|collection,
-                                             default created/desc)
+                                             sort = created|title|collection, default
+                                             created/desc; pageSize 24)
 POST   /admin/photos  (multipart)          → relay to object store (§5): probe dims
                                              + strip EXIF server-side BEFORE the
                                              object is public, return Photo with the
