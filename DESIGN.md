@@ -118,6 +118,11 @@ from Postgres by id so the index can never drift the §1 shape.
 - `GET /api/search` → ranked + paginated + exact `total`
 - `GET /api/search/suggest` → same engine, `limit` default 8, no pagination
 - typo tolerance on (it's a blog, not a database console)
+- **Photos ride the same engine for the admin door only** (§8
+  `GET /admin/search`): a second index `photos` with documents
+  `id, alt, collection, gallery`; searchable `alt^2, collection` — the
+  vocabulary curators actually remember. Public §1 search never reads it;
+  gallery=false photos may, because the admin palette must find everything.
 
 ## 5. Media Serving — ✅ RESOLVED (D1) **revised**: object storage + CDN, upload via lumen
 
@@ -229,6 +234,12 @@ POST   /admin/tags                         → create a vocabulary entry; name i
                                              slugified, 409 on duplicates — the
                                              portal creates eagerly, saves never
                                              guess which names are new
+GET    /admin/search?q                     → { posts, photos } — the palette's
+                                             content door: posts incl. drafts,
+                                             photos matched on alt + collection;
+                                             ≤8 each, no pagination (it's a
+                                             finder, not a browse axis). The
+                                             public §1 search stays posts-only
 POST   /admin/bao/…                        → secrets passthrough (§9; thin, explicit:
                                              read / versions / cas-write — no proxying
                                              sys/, no list beyond the policy's mounts)
