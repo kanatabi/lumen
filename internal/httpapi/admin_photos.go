@@ -16,6 +16,7 @@ import (
 )
 
 func (s *Server) mountAdminPhotos(a chi.Router) {
+	a.Post("/photos", s.adminUploadPhoto) // multipart relay (§5, D1-revised)
 	a.Get("/photos", s.adminListPhotos)
 	a.Get("/photos/{id}", s.adminGetPhoto)
 	a.Get("/photos/{id}/references", s.adminPhotoRefs)

@@ -24,6 +24,22 @@ type Config struct {
 	MeiliURL      string // read-serving engine (§4) — required for the real path
 	MeiliKey      string // master key (dev placeholder in compose; Bao in prod)
 	SessionSecret string // HS256 key, 32B, Bao lumen/{env} — admin surface (§8)
+
+	// Media (D1-revised, §5): S3-compatible object store + CDN base.
+	// VALUES live in Bao lumen/{env}; provider choice is HUMAN-GATE #9 —
+	// this struct is provider-agnostic by construction.
+	Media Media
+}
+
+type Media struct {
+	Endpoint     string
+	Region       string
+	Bucket       string
+	CDNBase      string
+	AccessKey    string
+	SecretKey    string
+	ForcePath    bool
+	CreateBucket bool
 }
 
 // Load reads configuration. searchPath is an optional explicit env.yaml path
@@ -42,6 +58,14 @@ func Load() (Config, error) {
 	for _, key := range []string{"db_url", "origin", "fixture", "config", "meili_url", "meili_key", "session_jwt_secret"} {
 		_ = v.BindEnv(key)
 	}
+	// media_* (LUMEN_MEDIA_*) bind per key; bools default false (prod never
+	// auto-creates buckets — that's the dev escape hatch)
+	for _, key := range []string{"media_endpoint", "media_region", "media_bucket", "media_cdn_base",
+		"media_access_key", "media_secret_key", "media_force_path", "media_create_bucket"} {
+		_ = v.BindEnv(key)
+	}
+	_ = v.BindEnv("media_force_path", "LUMEN_MEDIA_FORCE_PATH")
+	_ = v.BindEnv("media_create_bucket", "LUMEN_MEDIA_CREATE_BUCKET")
 
 	// the dev file: explicit via LUMEN_CONFIG, opportunistic via ./env.yaml —
 	// env vars always WIN (viper's native precedence: env > config > defaults)

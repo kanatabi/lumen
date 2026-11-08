@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/kanatabi/lumen/internal/media"
 	"github.com/kanatabi/lumen/internal/queue"
 	"github.com/kanatabi/lumen/internal/session"
 	"github.com/kanatabi/lumen/internal/store"
@@ -29,6 +30,11 @@ type AdminDeps struct {
 	Queue     *queue.Client
 	JWTSecret string
 	Limiter   *throttle.Limiter
+	// media relay (D1-revised §5): nil Media ⇒ uploads answer 503 honestly
+	Media         media.Store
+	MediaEndpoint string
+	MediaBucket   string
+	MediaCDNBase  string
 }
 
 func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {

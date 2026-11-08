@@ -226,6 +226,32 @@ func (g *PG) UpdateAdminPhoto(ctx context.Context, id int64, in PhotoPatch, qc i
 	return g.GetAdminPhotoRow(ctx, id)
 }
 
+// CreateAdminPhotoFromUpload lands an uploaded, sanitized image in the
+// library + the GC ledger (media_assets) + the index job — ONE transaction
+// (§5: nothing becomes public before the probe; §8: fresh photos are
+// gallery=false, collection=null — surfacing is a deliberate act).
+func (g *PG) CreateAdminPhotoFromUpload(ctx context.Context, src, alt string, width, height int, sha, key string, qc indexEnqueuer) (PhotoDocRow, error) {
+	var id int64
+	err := pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx,
+			`INSERT INTO photos(src, alt, width, height, sort, featured, gallery, collection)
+			 VALUES ($1,$2,$3,$4,(SELECT COALESCE(MAX(sort),0)+1 FROM photos),FALSE,FALSE,NULL)
+			 RETURNING id`, src, alt, width, height).Scan(&id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO media_assets(path, sha256, kind, nth) VALUES ($1,$2,'upload',0)
+			 ON CONFLICT (path) DO NOTHING`, key, sha); err != nil {
+			return err
+		}
+		return qc.InsertIndexPhotoTx(ctx, tx, id)
+	})
+	if err != nil {
+		return PhotoDocRow{}, err
+	}
+	return g.GetAdminPhotoRow(ctx, id)
+}
+
 // DeleteAdminPhoto removes the LIBRARY ROW; the object outlives it until
 // storage GC (§8). The worker's truth-read finds the row gone and deletes
 // the DOC — convergence by construction.

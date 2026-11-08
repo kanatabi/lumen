@@ -1,4 +1,7 @@
 # services for LOCAL DEV ONLY — the prod DB is Patroni in-cluster (INFRA §4/§6).
+# S3-dev stand-in is NOT here on purpose: MinIO withdrew its public images and
+# LocalStack v4+ demands an auth token — `make devs3` (cmd/devs3, gofakes3) is
+# the zero-Docker, zero-license dev endpoint. Prod provider: HUMAN-GATE #9.
 # The password is a throwaway for a disposable container on localhost; nothing
 # real lives here (values doctrine: INFRA §5).
 services:

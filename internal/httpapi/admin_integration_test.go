@@ -11,7 +11,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/jpeg"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,8 +24,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/johannesboyne/gofakes3"
+	"github.com/johannesboyne/gofakes3/backend/s3mem"
 
 	"github.com/kanatabi/lumen/internal/httpapi"
+	"github.com/kanatabi/lumen/internal/media"
 	"github.com/kanatabi/lumen/internal/queue"
 	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/service"
@@ -106,6 +112,29 @@ func newAdminHarness(t *testing.T) *adminHarness {
 	t.Cleanup(func() { _ = qc.Stop(context.Background()) })
 
 	deps := &httpapi.AdminDeps{Pool: pg, Queue: qc, JWTSecret: secret, Limiter: throttle.New(time.Minute)}
+	// media relay: an EMBEDDED S3-protocol server (gofakes3 + s3mem) — a
+	// real SigV4 endpoint, in-process and deterministic; no registry luck.
+	if os.Getenv("LUMEN_MEDIA") == "1" {
+		backend := s3mem.New()
+		if err := backend.CreateBucket("lumen-media-test"); err != nil {
+			t.Fatal(err)
+		}
+		s3srv := httptest.NewServer(gofakes3.New(backend).Server())
+		t.Cleanup(s3srv.Close)
+		mcfg := media.Config{
+			Endpoint:  s3srv.URL,
+			Region:    "us-east-1",
+			Bucket:    "lumen-media-test",
+			AccessKey: "test",
+			SecretKey: "test",
+			ForcePath: true,
+		}
+		ms, _, err := media.NewS3(ctx, mcfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deps.Media, deps.MediaEndpoint, deps.MediaBucket, deps.MediaCDNBase = ms, mcfg.Endpoint, mcfg.Bucket, ""
+	}
 	h := httpapi.New(service.New(pg, eng), eng, deps).Router()
 
 	ah := &adminHarness{t: t, h: h, pool: pool, qc: qc}
@@ -285,6 +314,72 @@ func TestAdminLifecycle(t *testing.T) {
 		}
 	})
 
+	// ---- media upload relay (LUMEN_MEDIA=1) ----
+	t.Run("upload relay: probe, strip, S3, row, index — one call", func(t *testing.T) {
+		if os.Getenv("LUMEN_MEDIA") != "1" {
+			t.Skip("LUMEN_MEDIA unset")
+		}
+		var raw bytes.Buffer
+		img := image.NewRGBA(image.Rect(0, 0, 240, 160))
+		if err := jpeg.Encode(&raw, img, &jpeg.Options{Quality: 85}); err != nil {
+			t.Fatal(err)
+		}
+		var body bytes.Buffer
+		mw := multipart.NewWriter(&body)
+		fw, err := mw.CreateFormFile("photo", "integration-upload.jpg")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = fw.Write(raw.Bytes())
+		_ = mw.Close()
+
+		code, res := ah.do(http.MethodPost, "/admin/photos", body.String(), ah.token)
+		// httptest.NewRequest ignores content-type from the string body —
+		// build the request manually to carry the multipart boundary
+		if code != http.StatusUnsupportedMediaType && code != http.StatusBadRequest {
+			var got store.AdminPhoto
+			_ = json.Unmarshal(res, &got)
+			if !strings.Contains(got.Src, "/media/") || !strings.HasSuffix(got.Src, ".jpg") {
+				t.Fatalf("src not the content-addressed key: %s", got.Src)
+			}
+			if got.Alt != "integration-upload" || got.Gallery {
+				t.Fatalf("fresh upload defaults wrong: %+v", got)
+			}
+			t.Cleanup(func() {
+				_, _ = ah.admin(http.MethodDelete, "/admin/photos/"+got.ID, "")
+			})
+			ah.drain()
+			list := ah.mustOK(http.MethodGet, "/admin/photos?limit=100", "")
+			if !bytes.Contains(list, []byte(got.ID)) {
+				t.Fatal("uploaded photo missing from admin list")
+			}
+			return
+		}
+		// fallthrough: wrong multipart framing — retry with an explicit request
+		req, err := http.NewRequest(http.MethodPost, "/admin/photos", bytes.NewReader(body.Bytes()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.Header.Set("Authorization", "Bearer "+ah.token)
+		rec := httptest.NewRecorder()
+		ah.h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("upload code %d: %s", rec.Code, rec.Body)
+		}
+		var got store.AdminPhoto
+		_ = json.Unmarshal(rec.Body.Bytes(), &got)
+		if !strings.Contains(got.Src, "/media/") {
+			t.Fatalf("src: %s", got.Src)
+		}
+		t.Cleanup(func() { _, _ = ah.admin(http.MethodDelete, "/admin/photos/"+got.ID, "") })
+		ah.drain()
+		list := ah.mustOK(http.MethodGet, "/admin/photos?limit=100", "")
+		if !bytes.Contains(list, []byte(got.ID)) {
+			t.Fatal("uploaded photo missing from admin list")
+		}
+	})
+
 	// ---- photos ----
 	t.Run("photo lifecycle on the suite's OWN row (siblings untouched)", func(t *testing.T) {
 		defer func() {
@@ -430,6 +525,13 @@ func TestAdminLifecycle(t *testing.T) {
 		}
 		t.Fatal("12 failures and no 429 — the throttle is asleep")
 	})
+}
+
+func orDev(v, d string) string {
+	if v != "" {
+		return v
+	}
+	return d
 }
 
 func rankOf(ah *adminHarness, slug string) int {
