@@ -1,0 +1,18 @@
+# Secrets doctrine (workspace non-negotiable #1): the ENV FILE ITSELF is the
+# thing that never enters git. Values live in Bao (lumen/{env}); this sample is
+# schema documentation only.
+.env
+.env.*
+!.env.example
+!env.yaml.sample
+*.local
+
+# build artifacts
+/bin/
+/dist/
+lumen
+seed
+
+# local data
+pgdata/
+*.db

@@ -1,8 +1,20 @@
 # lumen
 
-REST API + content pipeline for the blog — **design stage only**, no service
-code yet. Submodule of the [`omicron`](https://github.com/kanatabi/omicron)
-superproject.
+REST API + content pipeline for the blog — **M1 (read API) is live code**;
+admin write API (§8), sessions (JWT) and the Bao passthrough follow per the
+mellon PLAN milestones. Submodule of the
+[`omicron`](https://github.com/kanatabi/omicron) superproject.
+
+```
+make up && make seed && make run      # dev: compose postgres → migrations+fixture → serve :8080
+make test                             # offline: unit + contract suite vs the in-memory twin
+make test-integration                 # the same suite against REAL postgres
+make contract                         # the acceptance test: earendil's vitest vs live lumen
+                                      # (LUMEN_URL-gated; 13 tests — skipped when offline)
+```
+
+Go 1.26 · chi · pgx (prepared statements, doctrine in AGENTS.md) · viper.
+Migrations are plain SQL at `internal/store/migrations/`, applied by `cmd/seed`.
 
 | Doc | What |
 | :--- | :--- |

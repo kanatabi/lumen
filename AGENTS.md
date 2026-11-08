@@ -35,16 +35,32 @@ wiring scaffolding; never mistake it for the design.)
   **⚠️ Pending reconciliation:** `earendil` has since adopted Route B
   (client-side render) — see the warning at `DESIGN.md` §3; don't act on this
   rule either way without checking the frontend first.
-- **Only the frontend has an ingress.** SSR reaches the API via `API_BASE`
-  (internal DNS); the browser rides the FE's same-origin relays (`/api/*`
-  exists; `/media/*`/`/feed.xml` await D1/D2). Never "fix" a browser 404 by
-  adding a backend Ingress — superproject `AGENTS.md` non-negotiable #2.
+- **The API never has an ingress** (amended 2026-11-08 only in number of
+  *public surfaces*: blog + `console.gofar.id` — lumen is behind both). SSR pods
+  reach it via `API_BASE` (internal DNS); browsers ride FE/portal same-origin
+  relays. Never "fix" a browser 404 by adding a backend Ingress — superproject
+  `AGENTS.md` non-negotiable #2.
 - Real config/secret values live in OpenBao; Git keeps schemas/templates only.
 
-## Conventions (for when code lands)
+## Conventions (code has landed — these are rulings, not proposals)
 
-- Go, stdlib-first (`net/http` mux + pgx); no framework unless `DESIGN.md`
-  gains a reason. Container image name stays `blog-backend` — CI rewrites only
+- **Router: chi** (`go-chi/chi/v5`) — owner ruling at HUMAN-GATE #2
+  (2026-11-08), overriding the earlier stdlib-first default.
+- **SQL is always prepared statements.** All queries use `$n` parameters
+  through `store.NewPool`, which asserts
+  `pgx.QueryExecModeCacheStatement` explicitly (the doctrine is written, not
+  inherited from driver defaults); no value ever concatenates into SQL text,
+  and `ORDER BY` variants switch over fixed SQL strings. One honest exception:
+  multi-statement DDL migrations run through the simple protocol — trusted
+  checked-in files, no user data (extended protocol can't multi-statement, and
+  the rule exists to keep *untrusted values* out of SQL text).
+- **Config: viper** (owner ruling, 2026-11-08), env-first: precedence env >
+  optional `env.yaml` (`LUMEN_CONFIG`) > defaults, so ESO-rendered pod env
+  always wins. NO dotenv autoload — production speaks real environment.
+- **One file per resource for handlers** (`posts.go`, `search.go`, `photos.go`,
+  `tags.go`; plumbing in `router.go`/`respond.go`). A package must not
+  accrete into a single file.
+- Container image name stays `blog-backend` — CI rewrites only
   the `images:` line via `kustomize edit set image`, and GHCR names are
   lowercase.
 - Every response sets `Cache-Control` per §5 (content JSON short-lived;

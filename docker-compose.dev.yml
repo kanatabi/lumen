@@ -1,0 +1,22 @@
+# services for LOCAL DEV ONLY — the prod DB is Patroni in-cluster (INFRA §4/§6).
+# The password is a throwaway for a disposable container on localhost; nothing
+# real lives here (values doctrine: INFRA §5).
+services:
+  pg:
+    image: postgres:16.6
+    environment:
+      POSTGRES_USER: lumen
+      POSTGRES_PASSWORD: lumen-dev   # local-dev placeholder, never reused
+      POSTGRES_DB: lumen
+    ports:
+      - "5433:5432"                  # 5433: coexists with any local postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lumen -d lumen"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:
