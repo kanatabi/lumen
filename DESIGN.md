@@ -181,14 +181,18 @@ other endpoint 401s without it. Session state is minted *here*; mellon only carr
 
 ```
 POST   /admin/session                      → { token, expires_in }
-GET    /admin/posts?status&tag&page        → list incl. drafts (§1 shape + status)
+GET    /admin/posts?status&tag&sort&page   → list incl. drafts (§1 shape + status,
+                                             sort = newest|oldest|title on updated;
+                                             rows carry createdAt + publishedAt|null)
 POST   /admin/posts                        → create draft; body = PostDetail minus
                                              readTime (derived at publish)
 PUT    /admin/posts/:slug                  → update draft (optimistic-locked rev)
 POST   /admin/posts/:slug/publish          → the §2 unit of work: derivations,
                                              Postgres row, Meilisearch upsert,
                                              media GC — one transaction, idempotent
-POST   /admin/posts/:slug/unpublish        → draft state again; FE 404s it
+POST   /admin/posts/:slug/unpublish        → unpublished (the §4 machine: draft →
+                                             published ⇄ unpublished; a shipped post
+                                             NEVER returns to draft); 409 otherwise
 DELETE /admin/posts/:slug                  → soft-delete (retain media for GC window)
 PUT    /admin/photos  (multipart)          → store under /media, probe natural dims,
                                              return Photo (§1 shape)
