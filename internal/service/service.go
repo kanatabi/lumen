@@ -1,53 +1,78 @@
-// Package service shapes §1 responses from a Source using the ported domain
-// predicates. This is THE place list semantics live (facets, sort, ranking,
-// the suggest/search split, pagination) — one implementation shared by the
-// offline harness and the real Postgres-backed server, which is how the
-// contract stays one truth.
+// Package service orchestrates the §1 read path under the serving model
+// (owner ruling, 2026-11-08): the ENGINE answers lists, facets and
+// relevance; Postgres is the source of truth that results HYDRATE from —
+// never a query engine for search, never a fallback. Every public surface
+// re-checks truth at the hydration edge (status/gallery), so a lagging
+// index can at worst omit a row that just committed — never leak one.
+//
+// Both seams are interfaces: production wires search.Service (Meilisearch)
+// + store.PG (truth); the offline twin answers with the mock's own
+// semantics (store.Mem) so CI keeps byte-parity without a container.
 package service
 
 import (
 	"context"
-	"sort"
-	"strings"
 
 	"github.com/kanatabi/lumen/internal/domain"
 	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/store"
 )
 
-type Service struct {
-	src store.Source
-	// eng is the read-serving engine (§4 ruling). The read-path swap lands
-	// with it in this milestone's second commit — the seam exists first.
-	eng *search.Service
+// Engine is the serving-query seam (implemented by *search.Service and,
+// offline, by store.Mem's twin).
+type Engine interface {
+	// ListPosts: facets + explicit/curation sorts; a relevance engine MAY
+	// honor q.Q inside (Meilisearch does — the real engine serves both faces
+	// from one call; the twin keeps list semantics pure).
+	ListPosts(ctx context.Context, q domain.ListQuery) (search.ListPage, error)
+	// SearchPosts: the relevance face — required explicitly so the twin's
+	// mock-scoring and the engine's ranking are both honest implementations.
+	SearchPosts(ctx context.Context, q domain.ListQuery) (search.ListPage, error)
+	SuggestPosts(ctx context.Context, needle string, limit int) (search.ListPage, error)
+	ListPhotos(ctx context.Context, limit int) (search.PhotoPage, error)
 }
 
-func New(src store.Source, eng *search.Service) *Service { return &Service{src: src, eng: eng} }
+// Truth is the hydration + point-read seam (store.PG online, store.Mem twin —
+// the existing Source shape remains the hydration contract).
+type Service struct {
+	src store.Source // truth reads: point lookups, hydration, tag cloud
+	eng Engine       // serving queries: lists, facets, relevance
+}
 
-func summarize(d domain.Detail) domain.Summary {
-	return domain.Summary{
-		Slug: d.Slug, Title: d.Title, Subtitle: d.Subtitle, Preview: d.Preview,
-		Date: d.Date, ReadTime: d.ReadTime, Thumbnail: d.Thumbnail,
+func New(src store.Source, eng Engine) *Service { return &Service{src: src, eng: eng} }
+
+func (s *Service) listPostSummaries(ctx context.Context, slugs []string) ([]domain.Summary, error) {
+	all, err := s.src.PublishedPosts(ctx)
+	if err != nil {
+		return nil, err
 	}
+	bySlug := make(map[string]domain.Summary, len(all))
+	for _, d := range all {
+		bySlug[d.Slug] = summarize(d)
+	}
+	out := make([]domain.Summary, 0, len(slugs))
+	for _, slug := range slugs { // engine order preserved; hydration misses DROPPED
+		if sum, ok := bySlug[slug]; ok { // (truth re-check: gone or un-published = no serve)
+			out = append(out, sum)
+		}
+	}
+	return out, nil
 }
 
 func (s *Service) GetPosts(ctx context.Context, q domain.ListQuery) (domain.ListResult, error) {
-	all, err := s.src.PublishedPosts(ctx)
+	page, err := s.eng.ListPosts(ctx, q)
 	if err != nil {
 		return domain.ListResult{}, err
 	}
-	var kept []domain.Summary
-	for _, d := range all { // rank order preserved (curation, §1)
-		if domain.Matches(d, q) {
-			kept = append(kept, summarize(d))
-		}
+	items, err := s.listPostSummaries(ctx, page.Slugs)
+	if err != nil {
+		return domain.ListResult{}, err
 	}
-	domain.SortInPlace(kept, q.Sort)
-	return page(kept, q.Offset, q.Limit), nil
+	return domain.ListResult{Total: int(page.Total), Items: items}, nil
 }
 
-// GetPost: the draft-leak boundary — a draft slug 404s exactly like an unknown
-// one (Source guarantees only published rows ever reach here).
+// GetPost: a point read — truth direct (the §1 rule is about LISTING; a
+// single slug is a primary lookup, not a search).
 func (s *Service) GetPost(ctx context.Context, slug string) (domain.Detail, error) {
 	all, err := s.src.PublishedPosts(ctx)
 	if err != nil {
@@ -65,92 +90,64 @@ func (s *Service) GetPost(ctx context.Context, slug string) (domain.Detail, erro
 	return domain.Detail{}, store.ErrNotFound
 }
 
-// SuggestPosts: the palette launcher — contains-match over title+preview only,
-// corpus order, hard cap. No pagination (it is the same engine's low-limit
-// face; §1).
 func (s *Service) SuggestPosts(ctx context.Context, q string, limit int) (domain.SuggestResult, error) {
-	if limit <= 0 {
-		limit = domain.DefaultSuggestLim
-	}
-	if limit > domain.SuggestHardCap {
-		limit = domain.SuggestHardCap
-	}
-	all, err := s.src.PublishedPosts(ctx)
+	page, err := s.eng.SuggestPosts(ctx, q, limit)
 	if err != nil {
 		return domain.SuggestResult{}, err
 	}
-	needle := strings.ToLower(q)
-	res := []domain.Summary{}
-	for _, d := range all {
-		if needle != "" && domain.SuggestMatch(d, needle) {
-			res = append(res, summarize(d))
-			if len(res) == limit {
-				break
-			}
-		}
+	items, err := s.listPostSummaries(ctx, page.Slugs)
+	if err != nil {
+		return domain.SuggestResult{}, err
 	}
-	return domain.SuggestResult{Results: res}, nil
+	return domain.SuggestResult{Results: items}, nil
 }
 
-// SearchPosts: ranked + faceted + paginated. Relevance (occurrence count, the
-// mock-ported score) is the implicit default when q is present; an explicit
-// sort overrides it keeping totals identical (§1, harness-tested).
-// M3 swaps the scoring source to Meilisearch; the endpoint shape never moves.
+// SearchPosts: relevance is ENGINE-owned (the mock twin's ordering is a
+// fixture courtesy, not the spec — contract assertions moved to rules for
+// this surface). Empty q short-circuits before the call.
 func (s *Service) SearchPosts(ctx context.Context, q domain.ListQuery) (domain.ListResult, error) {
-	needle := strings.ToLower(strings.TrimSpace(q.Q))
-	if needle == "" {
+	if q.Q == "" {
 		return domain.ListResult{Total: 0, Items: []domain.Summary{}}, nil
 	}
-	all, err := s.src.PublishedPosts(ctx)
+	page, err := s.eng.SearchPosts(ctx, q)
 	if err != nil {
 		return domain.ListResult{}, err
 	}
-	type scored struct {
-		sum   domain.Summary
-		score int
+	items, err := s.listPostSummaries(ctx, page.Slugs)
+	if err != nil {
+		return domain.ListResult{}, err
 	}
-	var hits []scored
-	for _, d := range all {
-		if !domain.Matches(d, q) {
-			continue
-		}
-		sc := domain.Score(d, needle)
-		if sc > 0 {
-			hits = append(hits, scored{summarize(d), sc})
-		}
-	}
-	// relevance: score desc, stable — corpus (rank) order breaks ties, exactly
-	// the mock's Array.sort behavior
-	sort.SliceStable(hits, func(i, j int) bool { return hits[i].score > hits[j].score })
-	sums := make([]domain.Summary, len(hits))
-	for i, h := range hits {
-		sums[i] = h.sum
-	}
-	domain.SortInPlace(sums, q.Sort) // explicit override rides over relevance
-	return page(sums, q.Offset, q.Limit), nil
+	return domain.ListResult{Total: int(page.Total), Items: items}, nil
 }
 
 func (s *Service) GetPhotos(ctx context.Context, limit int) (domain.PhotoList, error) {
+	page, err := s.eng.ListPhotos(ctx, limit)
+	if err != nil {
+		return domain.PhotoList{}, err
+	}
 	all, err := s.src.Photos(ctx)
 	if err != nil {
 		return domain.PhotoList{}, err
 	}
-	var gallery = []domain.Photo{} // §1 serves gallery=true ONLY; flags are BE-internal
+	byID := make(map[int64]domain.Photo, len(all))
 	for _, p := range all {
-		if p.Gallery {
-			gallery = append(gallery, domain.Photo{
-				Src: p.Src, Alt: p.Alt, Width: p.Width, Height: p.Height,
-			})
+		if p.Gallery { // truth re-check at the hydration edge — the engine
+			b := p // filter can lag, §1 cannot
+			b.Gallery, b.Featured, b.Sort = false, false, 0
+			byID[p.ID] = b
 		}
 	}
-	total := len(gallery)
-	if limit < 0 || limit > total {
-		limit = total
+	items := make([]domain.Photo, 0, len(page.IDs))
+	for _, id := range page.IDs {
+		if p, ok := byID[id]; ok {
+			items = append(items, p)
+		}
 	}
-	return domain.PhotoList{Total: total, Items: gallery[:limit]}, nil
+	return domain.PhotoList{Total: int(page.Total), Items: items}, nil
 }
 
-// FeaturedPhoto: 404 when unset (the FE tolerates; kept for BE parity, §1).
+// FeaturedPhoto: curation point read from truth (which photo is featured is
+// a fact, not a search result).
 func (s *Service) FeaturedPhoto(ctx context.Context) (domain.Photo, error) {
 	all, err := s.src.Photos(ctx)
 	if err != nil {
@@ -158,7 +155,7 @@ func (s *Service) FeaturedPhoto(ctx context.Context) (domain.Photo, error) {
 	}
 	for _, p := range all {
 		if p.Featured {
-			return domain.Photo{Src: p.Src, Alt: p.Alt, Width: p.Width, Height: p.Height}, nil
+			return domain.Photo{ID: p.ID, Src: p.Src, Alt: p.Alt, Width: p.Width, Height: p.Height}, nil
 		}
 	}
 	return domain.Photo{}, store.ErrNotFound
@@ -175,21 +172,9 @@ func (s *Service) ListTags(ctx context.Context) ([]domain.Tag, error) {
 	return tags, nil
 }
 
-// ---- helpers ----
-
-func page(items []domain.Summary, offset, limit int) domain.ListResult {
-	total := len(items)
-	if offset > total {
-		offset = total
+func summarize(d domain.Detail) domain.Summary {
+	return domain.Summary{
+		Slug: d.Slug, Title: d.Title, Subtitle: d.Subtitle, Preview: d.Preview,
+		Date: d.Date, ReadTime: d.ReadTime, Thumbnail: d.Thumbnail,
 	}
-	if limit <= 0 { // absent limit = the rest (mock parity, §1)
-		limit = total
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-	out := make([]domain.Summary, 0, end-offset)
-	out = append(out, items[offset:end]...)
-	return domain.ListResult{Total: total, Items: out}
 }

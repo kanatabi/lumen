@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/kanatabi/lumen/internal/domain"
+	"github.com/kanatabi/lumen/internal/search"
 )
 
 // Fixture is the shape of testdata/earendil-fixture.json — the contract twin
@@ -33,6 +36,10 @@ func Mem(path string) (Source, error) {
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return nil, fmt.Errorf("fixture json: %w", err)
 	}
+	// synthetic stable ids (file order) — hydration glue, like the DB's
+	for i := range f.Photos {
+		f.Photos[i].ID = int64(i + 1)
+	}
 	return &memSource{f: f}, nil
 }
 
@@ -52,4 +59,114 @@ func (m *memSource) TagCloud(_ context.Context) ([]domain.Tag, error) {
 	out := make([]domain.Tag, len(m.f.Tags))
 	copy(out, m.f.Tags)
 	return out, nil
+}
+
+// ---- the twin AS engine (service.Engine seam, offline) ----
+//
+// This is the M1 read-path logic re-homed: the mock's exact semantics behind
+// the engine interface, so offline CI asserts byte-parity with earendil's
+// mock while production answers through Meilisearch. The twin is a fixture
+// tool — the serving-model ruling applies to the real thing, and the real
+// thing is tested against REAL Meilisearch in the engine-tier suite.
+
+func (m *memSource) ListPosts(_ context.Context, q domain.ListQuery) (search.ListPage, error) {
+	var kept []domain.Summary
+	for _, d := range m.f.Posts { // publication order == curation rank
+		if domain.Matches(d, q) {
+			kept = append(kept, summary(d))
+		}
+	}
+	domain.SortInPlace(kept, q.Sort)
+	total := len(kept)
+	if q.Limit == 0 { // absent limit = the whole corpus (mock parity)
+		q.Limit = total
+	}
+	page := slicePage(kept, q.Offset, q.Limit)
+	return search.ListPage{Slugs: slugsOf(page), Total: int64(total)}, nil
+}
+
+func (m *memSource) SearchPosts(_ context.Context, q domain.ListQuery) (search.ListPage, error) {
+	needle := strings.ToLower(strings.TrimSpace(q.Q))
+	if needle == "" {
+		return search.ListPage{Total: 0}, nil
+	}
+	type scored struct {
+		sum   domain.Summary
+		score int
+	}
+	var hits []scored
+	for _, d := range m.f.Posts {
+		if !domain.Matches(d, q) {
+			continue
+		}
+		if sc := domain.Score(d, needle); sc > 0 {
+			hits = append(hits, scored{summary(d), sc})
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].score > hits[j].score })
+	sums := make([]domain.Summary, len(hits))
+	for i, h := range hits {
+		sums[i] = h.sum
+	}
+	domain.SortInPlace(sums, q.Sort) // explicit override rides over relevance
+	limit := q.Limit
+	if limit == 0 {
+		limit = len(sums)
+	}
+	page := slicePage(sums, q.Offset, limit)
+	return search.ListPage{Slugs: slugsOf(page), Total: int64(len(sums))}, nil
+}
+
+func (m *memSource) SuggestPosts(_ context.Context, needle string, limit int) (search.ListPage, error) {
+	needle = strings.ToLower(needle)
+	var kept []domain.Summary
+	for _, d := range m.f.Posts {
+		if needle != "" && domain.SuggestMatch(d, needle) {
+			kept = append(kept, summary(d))
+			if len(kept) == limit {
+				break
+			}
+		}
+	}
+	return search.ListPage{Slugs: slugsOf(kept), Total: int64(len(kept))}, nil
+}
+
+func (m *memSource) ListPhotos(_ context.Context, limit int) (search.PhotoPage, error) {
+	var ids []int64
+	for _, p := range m.f.Photos {
+		if p.Gallery {
+			ids = append(ids, p.ID)
+		}
+	}
+	total := len(ids)
+	if limit > 0 && limit < total {
+		ids = ids[:limit]
+	}
+	return search.PhotoPage{IDs: ids, Total: int64(total)}, nil
+}
+
+func summary(d domain.Detail) domain.Summary {
+	return domain.Summary{
+		Slug: d.Slug, Title: d.Title, Subtitle: d.Subtitle, Preview: d.Preview,
+		Date: d.Date, ReadTime: d.ReadTime, Thumbnail: d.Thumbnail,
+	}
+}
+
+func slugsOf(items []domain.Summary) []string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, it.Slug)
+	}
+	return out
+}
+
+func slicePage(items []domain.Summary, offset, limit int) []domain.Summary {
+	if offset > len(items) {
+		offset = len(items)
+	}
+	end := offset + limit
+	if end > len(items) {
+		end = len(items)
+	}
+	return items[offset:end]
 }

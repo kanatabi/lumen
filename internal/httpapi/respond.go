@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/kanatabi/lumen/internal/domain"
+	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/store"
 )
 
@@ -34,6 +35,10 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusBadRequest, p.Msg)
 	case errors.Is(err, store.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not found")
+	case errors.Is(err, search.ErrUnavailable):
+		// pure-engine posture: engine down = lists/search 503, loudly — the
+		// visible failure the ruling chose over a silent dual path
+		writeErr(w, http.StatusServiceUnavailable, "search engine unavailable")
 	default:
 		writeErr(w, http.StatusInternalServerError, "internal error")
 	}

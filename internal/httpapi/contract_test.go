@@ -22,9 +22,19 @@ import (
 	"testing"
 
 	"github.com/kanatabi/lumen/internal/httpapi"
+	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/service"
 	"github.com/kanatabi/lumen/internal/store"
 )
+
+func mustEnvOr(tb testing.TB, k string) string {
+	tb.Helper()
+	v := os.Getenv(k)
+	if v == "" {
+		tb.Fatalf("%s required for the engine-tier integration", k)
+	}
+	return v
+}
 
 var linkRE = regexp.MustCompile(`\[.+\]\(.+\)`)
 
@@ -42,7 +52,11 @@ func memRouter(tb testing.TB) http.Handler {
 	if err != nil {
 		tb.Fatal(err)
 	}
-	return httpapi.New(service.New(src, nil), nil).Router() // offline twin: no engine yet (commit 2 swaps the read path)
+	eng, ok := src.(service.Engine)
+	if !ok {
+		tb.Fatal("twin must implement the engine seam")
+	}
+	return httpapi.New(service.New(src, eng), nil).Router() // twin serves both seams, offline
 }
 
 // runContractSuite is THE harness: one body, both stores.
@@ -428,6 +442,10 @@ func TestContract_Integration_Postgres(t *testing.T) {
 	if err := pool.Ping(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	h := httpapi.New(service.New(store.NewPG(pool), nil), nil).Router()
+	eng := search.New(mustEnvOr(t, "LUMEN_MEILI_URL"), mustEnvOr(t, "LUMEN_MEILI_KEY"))
+	if err := eng.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h := httpapi.New(service.New(store.NewPG(pool), eng), eng).Router()
 	runContractSuite(t, h)
 }

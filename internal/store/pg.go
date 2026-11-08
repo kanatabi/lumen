@@ -56,7 +56,7 @@ func (g *PG) PublishedPosts(ctx context.Context) ([]domain.Detail, error) {
 
 func (g *PG) Photos(ctx context.Context) ([]domain.Photo, error) {
 	rows, err := g.pool.Query(ctx, `
-		SELECT src, alt, width, height, gallery, featured, sort, collection
+		SELECT id, src, alt, width, height, gallery, featured, sort, collection
 		FROM photos ORDER BY sort ASC, id ASC`)
 	if err != nil {
 		return nil, err
@@ -65,7 +65,7 @@ func (g *PG) Photos(ctx context.Context) ([]domain.Photo, error) {
 	var out []domain.Photo
 	for rows.Next() {
 		var p domain.Photo
-		if err := rows.Scan(&p.Src, &p.Alt, &p.Width, &p.Height,
+		if err := rows.Scan(&p.ID, &p.Src, &p.Alt, &p.Width, &p.Height,
 			&p.Gallery, &p.Featured, &p.Sort, &p.Collection); err != nil {
 			return nil, err
 		}

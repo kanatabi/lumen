@@ -30,12 +30,14 @@ type Detail struct {
 }
 
 type Photo struct {
-	Src    string `json:"src"`
-	Alt    string `json:"alt"`
-	Width  int    `json:"width"`
-	Height int    `json:"height"`
-	// Curation columns: present in payloads for BE-side rows, never rendered
-	// by the FE (the §1 Photo shape trims them at the handler edge).
+	// ID is hydration glue (engine ids ↔ truth rows), never on the wire;
+	// curation fields below are BE-side facts the §1 shape trims at the
+	// service edge (hydration zeroes them before encoding).
+	ID         int64   `json:"-"`
+	Src        string  `json:"src"`
+	Alt        string  `json:"alt"`
+	Width      int     `json:"width"`
+	Height     int     `json:"height"`
 	Gallery    bool    `json:"gallery,omitempty"`
 	Featured   bool    `json:"featured,omitempty"`
 	Sort       int     `json:"sort,omitempty"`
