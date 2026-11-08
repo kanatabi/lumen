@@ -26,11 +26,9 @@ test-integration: up     ## same harness against REAL postgres (§1 truth check)
 	go run ./cmd/seed
 	LUMEN_INTEGRATION=1 go test -count=1 ./internal/httpapi/ -run Integration
 
-contract:                  ## the earendil-side gate: real vitest against a live lumen
-	@(go run ./cmd/lumen &) 
-	@sleep 1
-	@cd ../earendil && LUMEN_URL=http://localhost:8080 npx vitest run src/lib/api/contract.spec.ts; \
-	 ec=$$?; pkill -f 'go run ./cmd/lumen' 2>/dev/null; pkill -x lumen 2>/dev/null; exit $$ec
+contract:                  ## the earendil-side gate: real vitest against a RUNNING lumen (make run first)
+	@curl -sf http://localhost:8080/readyz >/dev/null || { echo "lumen not reachable on :8080 — run 'make run' in another shell"; exit 1; }
+	@cd ../earendil && LUMEN_URL=http://localhost:8080 npx vitest run src/lib/api/contract.spec.ts
 
 tidy:
 	go mod tidy
