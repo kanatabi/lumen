@@ -185,8 +185,9 @@ other endpoint 401s without it. Session state is minted *here*; mellon only carr
 
 ```
 POST   /admin/session                      → { token, expires_in }
-GET    /admin/posts?status&tag&sort&page   → list incl. drafts (§1 shape + status,
-                                             sort = newest|oldest|title on updated;
+GET    /admin/posts?status&tag&sort&dir&page → list incl. drafts (§1 shape + status;
+                                             sort = updated|created|published|title,
+                                             dir = asc|desc, default updated/desc;
                                              rows carry createdAt + publishedAt|null)
 POST   /admin/posts                        → create draft; body = PostDetail minus
                                              readTime (derived at publish)
