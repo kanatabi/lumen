@@ -38,11 +38,13 @@ import (
 )
 
 type adminHarness struct {
-	t     *testing.T
-	h     http.Handler
-	pool  *pgxpool.Pool
-	qc    *queue.Client
-	token string
+	t       *testing.T
+	h       http.Handler
+	pool    *pgxpool.Pool
+	qc      *queue.Client
+	deps    *httpapi.AdminDeps
+	rebuild func() // re-mount the router after mutating deps (e.g. adding §9)
+	token   string
 }
 
 func newAdminHarness(t *testing.T) *adminHarness {
@@ -112,6 +114,7 @@ func newAdminHarness(t *testing.T) *adminHarness {
 	t.Cleanup(func() { _ = qc.Stop(context.Background()) })
 
 	deps := &httpapi.AdminDeps{Pool: pg, Queue: qc, JWTSecret: secret, Limiter: throttle.New(time.Minute)}
+	build := func() http.Handler { return httpapi.New(service.New(pg, eng), eng, deps).Router() }
 	// media relay: an EMBEDDED S3-protocol server (gofakes3 + s3mem) — a
 	// real SigV4 endpoint, in-process and deterministic; no registry luck.
 	if os.Getenv("LUMEN_MEDIA") == "1" {
@@ -135,9 +138,9 @@ func newAdminHarness(t *testing.T) *adminHarness {
 		}
 		deps.Media, deps.MediaEndpoint, deps.MediaBucket, deps.MediaCDNBase = ms, mcfg.Endpoint, mcfg.Bucket, ""
 	}
-	h := httpapi.New(service.New(pg, eng), eng, deps).Router()
-
-	ah := &adminHarness{t: t, h: h, pool: pool, qc: qc}
+	ah := &adminHarness{t: t, pool: pool, qc: qc, deps: deps}
+	ah.h = build()
+	ah.rebuild = func() { ah.h = build() }
 	ah.token = ah.login("fzr-test", "integration-pw")
 	return ah
 }

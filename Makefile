@@ -35,10 +35,10 @@ run:                   ## serve §1 on :8080 against dev postgres
 test:                  ## offline gate: unit + harness against the in-memory twin
 	go test ./...
 
-test-integration: up     ## the SAME suites against real Postgres + Meilisearch (incl. §8 lifecycle)
+test-integration: up   ## EVERY gated suite against real infra: pg + meili + embedded S3 + dev vault
 	go run ./cmd/seed
-	LUMEN_INTEGRATION=1 LUMEN_MEILI_URL=$(LUMEN_MEILI_URL) LUMEN_MEILI_KEY=$(LUMEN_MEILI_KEY) go test -count=1 ./...
-	go run ./cmd/seed   ## the admin lifecycle mutates the corpus — restore it for whatever follows
+	LUMEN_INTEGRATION=1 LUMEN_MEDIA=1 LUMEN_BAO_ADDR=http://localhost:8200 go test -count=1 ./...
+	go run ./cmd/seed   ## lifecycles mutate the corpus — restore it for whatever follows
 
 test-media: up         ## upload relay against a REAL S3-protocol server (gofakes3 embedded)
 	go run ./cmd/seed

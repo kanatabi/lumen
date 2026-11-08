@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/kanatabi/lumen/internal/bao"
 	"github.com/kanatabi/lumen/internal/media"
 	"github.com/kanatabi/lumen/internal/queue"
 	"github.com/kanatabi/lumen/internal/session"
@@ -30,6 +31,8 @@ type AdminDeps struct {
 	Queue     *queue.Client
 	JWTSecret string
 	Limiter   *throttle.Limiter
+	// secrets plane (§9): nil Bao ⇒ no /admin/bao surface at all
+	Bao *bao.Client
 	// media relay (D1-revised §5): nil Media ⇒ uploads answer 503 honestly
 	Media         media.Store
 	MediaEndpoint string
@@ -142,6 +145,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 			s.mountAdminPhotos(auth)
 			s.mountAdminVocab(auth)
 			s.mountAdminSearch(auth)
+			s.mountAdminBao(auth)
 		})
 	})
 }
