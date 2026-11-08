@@ -119,30 +119,32 @@ from Postgres by id so the index can never drift the §1 shape.
 - `GET /api/search/suggest` → same engine, `limit` default 8, no pagination
 - typo tolerance on (it's a blog, not a database console)
 
-## 5. Media Serving — ✅ RESOLVED (D1): extend the SSR relay to `/media/*`
+## 5. Media Serving — ✅ RESOLVED (D1) **revised**: object storage + CDN, upload via lumen
 
-> **Decision (owner, 2026-11-08):** option 1 below — `/media/*` rides the SSR relay,
-> same-origin like `/api/*`. Implemented in BOTH earendil (public media) and mellon
-> (admin previews) when lumen serves real files; §8's upload endpoint and Phase 10 of
-> `INFRA_ARCHITECTURE.md` carry the work. "Exactly one public ingress" stays literally true.
+> **Decision (owner, 2026-11-08, second pass):** the first resolution (media bytes
+> riding the SSR relay at `/media/*`) is **superseded**: media lives in an
+> **S3-compatible object store fronted by a CDN**; `Photo.src` is an **absolute CDN
+> URL** and browsers fetch it from the CDN directly — third-party public edge, so
+> "exactly one public ingress *of ours*" stays literally true, and image bytes never
+> touch the VPS pods. **Upload is backend-relay**: the portal posts multipart to
+> lumen (`§8`), lumen probes dims + strips EXIF *before* the object is public,
+> stores, and returns the URL. Presigned-direct upload (browser → bucket) is
+> recorded as the future scale option — it would need a confirm step + post-upload
+> probe, and the portal contract (`addPhoto → Photo`) is written so the swap touches
+> no UI code. **Provider choice (S3 / R2 / Wasabi / …) = owner call, open**
+> (`mellon/PLAN.md` HUMAN-GATE ledger); values (bucket, endpoint, CDN base, creds)
+> live in Bao per §5-of-INFRA, schema in `env.yaml.sample`.
 
-Diagrams, gallery photos, and thumbnails are owned here under `/media/*`, but
-browsers can only reach the frontend's origin, and the SSR relay currently
-forwards `/api/*` only. Two viable answers — the choice changes `earendil`:
+Diagrams, gallery photos, and thumbnails are owned here; API responses carry URLs
+**the FE renders unchanged** — the FE never assembles media paths (unchanged rule,
+now pointing at the CDN instead of the relay).
 
-1. **(Recommended default) Extend the SSR relay: `/media/*` →
-   `API_BASE/media/*`.** The same-origin pattern already exists for `/api`;
-   the FE gains ~15 lines and "exactly one public ingress" stays literally
-   true. Image bytes transit the Node pods — fine at blog traffic, given
-   `Cache-Control: public, max-age=31536000, immutable` (content-hash
-   filenames, §3, make `immutable` safe).
-2. **Dedicated public object storage (MinIO/S3/R2) for media only.** Offloads
-   bytes entirely from SSR pods; bends the network rule (a public *read-only
-   bucket* ≈ not an app ingress, but it's a call the manifest repo must make
-   explicitly).
-
-Whatever is chosen, API responses carry URLs **the FE renders unchanged** — the
-FE never assembles media paths.
+~1. **(Superseded) Extend the SSR relay: `/media/*` → `API_BASE/media/*`.**~ Kept
+for the record: it was D1's first answer (same-origin pattern as `/api`, bytes
+through Node pods). Replaced by the CDN shape above; the earendil `/media/*` relay
+work in INFRA Phase 10 is cancelled accordingly.
+2. **Object storage (MinIO/S3/R2) for media only.** — **now the decision**, with
+the relay-upload ingestion path instead of direct browser→bucket credentials.
 
 ## 6. Data Model (sketch)
 
@@ -157,7 +159,9 @@ FE never assembles media paths.
 
 ## 7. Open Questions
 
-- ~~**D1** — media path~~ **RESOLVED**: SSR-relay `/media/*` (§5 header); execute in Phase 10.
+- ~~**D1** — media path~~ **RESOLVED (revised)**: object storage + CDN with
+  **backend-relay upload** (§5 header, owner second pass 2026-11-08); provider
+  choice remains with the owner (`mellon/PLAN.md` ledger); execute in Phase 10.
 - **D2** — RSS: browser fetches `/feed.xml` at the blog origin; needs either a
   thin FE route `/feed.xml` → `API_BASE/api/feed.xml`, or listing the feed
   under D1's relay decision. Recommend bundling with D1.
@@ -194,9 +198,16 @@ POST   /admin/posts/:slug/unpublish        → unpublished (the §4 machine: dra
                                              published ⇄ unpublished; a shipped post
                                              NEVER returns to draft); 409 otherwise
 DELETE /admin/posts/:slug                  → soft-delete (retain media for GC window)
-PUT    /admin/photos  (multipart)          → store under /media, probe natural dims,
-                                             return Photo (§1 shape)
-GET    /admin/tags                         → cloud incl. drafts; counts = published
+POST   /admin/photos  (multipart)          → relay to object store (§5): probe dims
+                                             + strip EXIF server-side BEFORE the
+                                             object is public, return Photo with the
+                                             absolute CDN src (§1 shape)
+GET    /admin/tags                         → vocabulary (every created tag, used
+                                             or not; counts = published posts)
+POST   /admin/tags                         → create a vocabulary entry; name is
+                                             slugified, 409 on duplicates — the
+                                             portal creates eagerly, saves never
+                                             guess which names are new
 POST   /admin/bao/…                        → secrets passthrough (§9; thin, explicit:
                                              read / versions / cas-write — no proxying
                                              sys/, no list beyond the policy's mounts)
