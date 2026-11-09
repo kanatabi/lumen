@@ -32,9 +32,9 @@ export LUMEN_MEDIA_FORCE_PATH LUMEN_MEDIA_CREATE_BUCKET
 help:                  ## list targets
 	@grep -hE '^[a-z][a-z-]*:.*## ' Makefile | sed 's/:.*## /  — /'
 
-dev: up user           ## THE one-command loop: infra + seed + dev user + serve :8080 (Ctrl-C stops the server, containers stay)
-	go run ./cmd/seed
-	go run ./cmd/lumen
+dev:                   ## THE one-command loop — reuses whatever already runs (containers, data, server); creates only what's missing
+	@docker compose -f docker-compose.dev.yml ps --status running --services 2>/dev/null | grep -qx pg 		&& echo "  containers: reusing what's up (compose up is a no-op for matching containers)" 		|| docker compose -f docker-compose.dev.yml up -d --wait
+	@if curl -sf http://localhost:8080/readyz >/dev/null 2>&1; then 		echo "  lumen: already serving :8080 — nothing to do (its Makefile siblings start what's missing)"; 	else 		$(MAKE) --no-print-directory user seed; 		echo "  serving :8080 (Ctrl-C stops the server; containers and data stay)"; 		go run ./cmd/lumen; 	fi
 
 dev-plane:             ## bootstrap the dev OpenBao §5.6 shape (kv/policy/approle) → writes dev-plane.env; then restart make dev for /admin/bao
 	bash scripts/dev-plane.sh
@@ -42,11 +42,13 @@ dev-plane:             ## bootstrap the dev OpenBao §5.6 shape (kv/policy/appro
 user:                  ## upsert the dev admin account (idempotent; token_version preserved)
 	LUMEN_PASSWORD=$(DEV_PASSWORD) go run ./cmd/userctl -username $(DEV_USER)
 
+seed:                  ## migrations + engine reconcile; reloads the fixture ONLY on an empty DB (FORCE=1 to reset)
+
 up:                    ## start dev stack: postgres + meilisearch + openbao (bao storage is in-memory dev mode)
 	docker compose -f docker-compose.dev.yml up -d --wait
 
-devs3:                 ## S3-protocol dev server on :4566 (gofakes3, in-memory; leave running)
-	LUMEN_MEDIA_DEV_ADDR=:4566 LUMEN_MEDIA_BUCKET=$(LUMEN_MEDIA_BUCKET) go run ./cmd/devs3
+devs3:                 ## S3-protocol dev server on :4566 (in-memory) — reuses one that's already up
+	@curl -sf http://localhost:4566/ >/dev/null 2>&1 		&& echo "devs3: already serving :4566 — reusing it" 		|| LUMEN_MEDIA_DEV_ADDR=:4566 LUMEN_MEDIA_BUCKET=$(LUMEN_MEDIA_BUCKET) go run ./cmd/devs3
 
 down:                  ## stop the dev stack (pg/meili volumes persist; openbao dev storage does not — rerun make dev-plane after)
 	docker compose -f docker-compose.dev.yml down
@@ -61,9 +63,9 @@ test:                  ## offline gate: unit + harness against the in-memory twi
 	go test ./...
 
 test-integration: up   ## EVERY gated suite against real infra: pg + meili + embedded S3 + dev OpenBao
-	go run ./cmd/seed
+	FORCE=1 go run ./cmd/seed   ## tests need the deterministic corpus — explicit reset
 	LUMEN_INTEGRATION=1 LUMEN_MEDIA=1 LUMEN_BAO_ADDR=http://localhost:8200 go test -count=1 ./...
-	go run ./cmd/seed   ## lifecycles mutate the corpus — restore it for whatever follows
+	FORCE=1 go run ./cmd/seed   ## lifecycles mutate the corpus — restore it for whatever follows
 
 test-media: up         ## upload relay against a REAL S3-protocol server (gofakes3 embedded)
 	go run ./cmd/seed
