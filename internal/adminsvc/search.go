@@ -2,9 +2,7 @@ package adminsvc
 
 import (
 	"context"
-	"errors"
 
-	"github.com/kanatabi/lumen/internal/bao"
 	"github.com/kanatabi/lumen/internal/domain"
 	"github.com/kanatabi/lumen/internal/store"
 )
@@ -57,28 +55,4 @@ func (s *Service) Search(ctx context.Context, q string) (SearchResults, error) {
 	}
 	out.Tags = tags
 	return out, nil
-}
-
-// ---- secrets plane (§9): four operations, bao errors translated to OUR
-// sentinels so handlers import neither the client nor its error types ----
-
-func (s *Service) SecretPaths(ctx context.Context) ([]bao.Path, error) {
-	return s.bao.ListPaths(ctx)
-}
-
-func (s *Service) ReadSecret(ctx context.Context, app, env string, version int) (*bao.Payload, error) {
-	return s.bao.Read(ctx, app, env, version)
-}
-
-func (s *Service) SecretMeta(ctx context.Context, app, env string) (*bao.Meta, error) {
-	return s.bao.Meta(ctx, app, env)
-}
-
-func (s *Service) WriteSecret(ctx context.Context, app, env string, data map[string]string, cas int) (int, error) {
-	version, err := s.bao.WriteCAS(ctx, app, env, data, cas)
-	var baoErr *bao.Error
-	if errors.As(err, &baoErr) && baoErr.Kind == bao.ErrCheckAndSet {
-		return 0, ErrStaleCAS
-	}
-	return version, err
 }

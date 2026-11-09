@@ -44,7 +44,7 @@ type Service struct {
 	mediaBucket   string
 	mediaCDNBase  string
 
-	bao *bao.Client
+	bao baoAPI // concrete: *bao.Client; tests: the fake in secrets_test.go
 }
 
 func New(st *store.PG, q *queue.Client, eng *search.Service, jwtSecret string, limiter *throttle.Limiter) *Service {

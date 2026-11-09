@@ -34,7 +34,7 @@ fi
 
 # --- the fzr-portal policy: kv/* ONLY — no sys, nothing else (§9) ---
 curl -X PUT "${H[@]}" "$BAO/v1/sys/policies/acl/fzr-portal" -d '{
-  "policy": "path \"kv/data/*\" { capabilities = [\"read\", \"list\", \"create\", \"update\"] }\npath \"kv/metadata/*\" { capabilities = [\"read\", \"list\"] }\n"
+  "policy": "path \"kv/data/*\" { capabilities = [\"read\", \"list\", \"create\", \"update\"] }\npath \"kv/metadata/*\" { capabilities = [\"read\", \"list\", \"patch\"] }\n"
 }' >/dev/null
 say 'policy fzr-portal: applied (kv/* only)'
 

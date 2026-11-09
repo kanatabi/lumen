@@ -370,7 +370,24 @@ explicit** subset of OpenBao KV v2 — per `INFRA_ARCHITECTURE.md` §5.5:
   `bao-approle-credentials`, the §5.6 seed). Mellon never sees it.
 - Exposed operations: list metadata (policy-scoped mounts/paths), read
   (`/v1/kv/data/<app>/<env>`, `?version=N`), version list (`/v1/kv/metadata/...`),
-  CAS write (`PUT` with `cas`), nothing else. No `sys/`, no unauthenticated paths.
+  CAS write (`PUT` with `cas`), create-if-absent (`cas=0` — onboarding seeds,
+  never overwrites), and metadata PATCH (`custom_metadata` — the pin's home).
+  Nothing else. No `sys/`, no unauthenticated paths, no destroy/delete surface
+  (D5: app/env teardown stays an operator drill, not a UI button).
+- **Control plane (PLAN-SECRETS-CONTROL.md): apps are DATA.** Namespaces are
+  opaque validated slugs (`^[a-z][a-z0-9-]{1,31}$`) — no allowlists, no
+  per-app logic anywhere. Onboarding seeds the trio `dev/staging/production`
+  (a DEFAULT, not a schema — add-env extends an app, seeded to the canonical
+  key-set union). Every structural write **mirrors the key set to all sibling
+  envs** (adds land empty, removes propagate, values are per-env and never
+  clobbered); the mirror RECONCILES live sibling shapes, so an interrupted
+  mirror is healed by the next save. Value-only edits bump no sibling at all.
+- **Pins are intent, never routing (D1):** `pinned_version` lives in KV-v2
+  `custom_metadata` — as a STRING, because the engine stores metadata as
+  `map[string]string` (a numeric value answers 500; the metadata PATCH also
+  demands `application/merge-patch+json`, which the Go SDK's Patch does not
+  send — both truths came from the live battery). Reads always serve head;
+  any version remains viewable (`?version=N`); unpin is RFC 7396 null-delete.
 - Redaction: values never logged (structured logs redact by key); audit is **Bao's own
   audit devices** — lumen logs the *operation*, not the *payload*.
 - The same client runs the CI drift check (§5.5) — one implementation, two consumers.

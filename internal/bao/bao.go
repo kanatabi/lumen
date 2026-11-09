@@ -1,6 +1,9 @@
 // Package bao is the secrets-plane relay (lumen §9): a MINIMAL, explicit
-// surface over the KV v2 API — list metadata (policy-scoped), read (+
-// version pin), version list, CAS write. The fzr-portal AppRole lives in
+// surface over the KV v2 API — list metadata, read (+version), version list,
+// CAS write, create-if-absent (onboarding), metadata PATCH (the pin). The
+// surface grew only where PLAN-SECRETS-CONTROL demanded a decision lumen
+// must OWN (invariant fan-out, intent pins) — never a raw Bao proxy.
+// The fzr-portal AppRole lives in
 // lumen's env (rendered by ESO from the §5.6 seed); the portal UI NEVER
 // sees these credentials — it authenticates to LUMEN, lumen authenticates
 // to Bao. No sys/ route exists here by construction, not by convention.
@@ -17,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,7 +35,10 @@ type ErrorKind int
 
 const (
 	ErrCheckAndSet ErrorKind = iota // stale cas (§9: conflicts are the point)
-	ErrPermission
+	ErrPermission                   // ACL says no — incl. the A5 case: policy
+	// without `patch` surfaces here on pin
+	ErrAlreadyExists // create-only write hit a live path
+	// (onboard/add-env are never overwrites)
 )
 
 type Error struct {
@@ -59,6 +66,11 @@ type VersionInfo struct {
 type Meta struct {
 	CurrentVersion int           `json:"currentVersion"`
 	Versions       []VersionInfo `json:"versions"`
+	// PinnedVersion is operator INTENT (D1), stored in KV-v2
+	// custom_metadata{"pinned_version":"N"} (the engine stores metadata as
+	// strings) — it never reroutes reads.
+	// nil = unpinned; 0 is not a legal version so absence and zero agree.
+	PinnedVersion *int `json:"pinnedVersion"`
 }
 
 type Path struct {
@@ -137,7 +149,7 @@ func (c *Client) client(ctx context.Context) (*api.Client, error) {
 	return clone, nil
 }
 
-// ---- the four operations (§9) — nothing else is exposed ----
+// ---- the §9 surface — nothing outside these operations is exposed ----
 
 // ListPaths enumerates the policy-scoped mounts/paths: kv/metadata/<app>/
 // → apps; each app's children are envs. Names only — the metadata LIST is
@@ -259,14 +271,30 @@ func (c *Client) Meta(ctx context.Context, app, env string) (*Meta, error) {
 	if resp == nil || resp.Data == nil {
 		return nil, nil
 	}
+	return decodeMeta(resp.Data), nil
+}
+
+// decodeMeta is the PURE wire-shape reader for kv/metadata GET (fixture
+// JSON in, struct out; zero network) — A2's acceptance test lives beside it.
+// KV v2 nests per-version entries under "versions" as a map keyed by
+// version number, and echoes our pin under "custom_metadata".
+func decodeMeta(d map[string]any) *Meta {
 	m := &Meta{}
-	if cv, ok := resp.Data["current_version"]; ok {
+	if cv, ok := d["current_version"]; ok {
 		m.CurrentVersion = int(toNum(cv))
 	}
-	if vm, ok := resp.Data["versions"].(map[string]any); ok {
+	if vm, ok := d["versions"].(map[string]any); ok {
 		for k, v := range vm {
+			// versions is keyed by the version NUMBER AS A STRING — toNum
+			// on a string answered 0 for every entry (the pre-A2 fixture
+			// test caught this live: mellon's history listed 0/0/0). Keys
+			// that are not integers are not versions; skip them.
+			n, err := strconv.Atoi(k)
+			if err != nil {
+				continue
+			}
 			entry, _ := v.(map[string]any)
-			vi := VersionInfo{Version: int(toNum(k))}
+			vi := VersionInfo{Version: n}
 			if entry != nil {
 				vi.CreatedTime = str(entry["created_time"])
 				vi.Destroyed, _ = entry["destroyed"].(bool)
@@ -278,7 +306,99 @@ func (c *Client) Meta(ctx context.Context, app, env string) (*Meta, error) {
 	if m.Versions == nil {
 		m.Versions = []VersionInfo{}
 	}
-	return m, nil
+	m.PinnedVersion = parsePinned(d["custom_metadata"])
+	return m
+}
+
+// parsePinned reads custom_metadata{"pinned_version"} defensively: any
+// shape we did not write (foreign tool, absent, null, string) yields nil —
+// a pin is only a pin when it is a positive number.
+func parsePinned(cm any) *int {
+	m, ok := cm.(map[string]any)
+	if !ok {
+		return nil
+	}
+	v, ok := m["pinned_version"]
+	if !ok {
+		return nil
+	}
+	// the engine's custom_metadata is map[string]string (the pin arrives as
+	// "2"); numeric shapes (fixtures, other writers) parse too — either way
+	// it is a pin ONLY as a positive integer, never a lie of 0.
+	n := 0
+	switch sv := v.(type) {
+	case string:
+		n, _ = strconv.Atoi(sv)
+	default:
+		n = int(toNum(sv))
+	}
+	if n > 0 {
+		return &n
+	}
+	return nil
+}
+
+// classifyErr maps Bao's error TEXT to kinds (the SDK gives no typed 4xx
+// surface). Pure — table-testable without a server.
+func classifyErr(err error) error {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "check-and-set") || strings.Contains(msg, "Cas mismatch"):
+		return &Error{Kind: ErrCheckAndSet, Err: err}
+	case strings.Contains(msg, "permission denied"):
+		return &Error{Kind: ErrPermission, Err: err}
+	}
+	return err
+}
+
+// remapExists turns a CAS failure on a cas=0 create into ErrAlreadyExists:
+// on a create, "someone wrote first" is not a conflict to retry — it is
+// "the namespace exists", a 409 with a different story. Pure.
+func remapExists(err error) error {
+	if be, ok := err.(*Error); ok && be.Kind == ErrCheckAndSet {
+		return &Error{Kind: ErrAlreadyExists, Err: be.Err}
+	}
+	return err
+}
+
+// CreateIfAbsent writes only when the path has NO versions yet (cas = 0):
+// the onboard / add-env primitive. An existing path answers
+// ErrAlreadyExists — seeding is never an overwrite.
+func (c *Client) CreateIfAbsent(ctx context.Context, app, env string, data map[string]string) error {
+	_, err := c.WriteCAS(ctx, app, env, data, 0)
+	return remapExists(err)
+}
+
+// PatchMetadataCustom JSON-merge-patches custom_metadata on
+// kv/metadata/{app}/{env} (the pin's home, D1: intent metadata, never a
+// read path). RFC 7396 semantics: a nil value REMOVES the key — Unpin is
+// Patch(map{"pinned_version": nil}), not a sentinel number. Requires the
+// `patch` capability (dev-plane policy, PLAN A5); without it Bao answers
+// permission denied, classified as ErrPermission here.
+func (c *Client) PatchMetadataCustom(ctx context.Context, app, env string, custom map[string]any) error {
+	tokenClient, err := c.client(ctx)
+	if err != nil {
+		return err
+	}
+	// NOT Logical().Patch: the SDK sends application/scim+json and Bao's
+	// KV-v2 metadata PATCH answers 415 — the merge-patch MEDIA TYPE is the
+	// wire contract (RFC 7396 is also why nil DELETES the key). Integration
+	// earned this comment by failing exactly on it.
+	req := tokenClient.NewRequest("PATCH", "/v1/"+fmt.Sprintf("kv/metadata/%s/%s", app, env))
+	if err := req.SetJSONBody(map[string]any{"custom_metadata": custom}); err != nil {
+		return err
+	}
+	req.Headers.Set("Content-Type", "application/merge-patch+json")
+	resp, err := tokenClient.RawRequestWithContext(ctx, req)
+	if err != nil {
+		return classifyErr(err)
+	}
+	// RawRequestWithContext already consumed the body (Response.Close is a
+	// bool field, not a method — a compile-time breadcrumb from the SDK)
+	if resp != nil && resp.Error() != nil {
+		return classifyErr(resp.Error())
+	}
+	return nil
 }
 
 // WriteCAS refuses unless cas == current version (§9: no unconditional
@@ -298,14 +418,7 @@ func (c *Client) WriteCAS(ctx context.Context, app, env string, data map[string]
 		},
 	})
 	if err != nil {
-		msg := err.Error()
-		switch {
-		case strings.Contains(msg, "check-and-set") || strings.Contains(msg, "Cas mismatch"):
-			return 0, &Error{Kind: ErrCheckAndSet, Err: err}
-		case strings.Contains(msg, "permission denied"):
-			return 0, &Error{Kind: ErrPermission, Err: err}
-		}
-		return 0, err
+		return 0, classifyErr(err)
 	}
 	if resp == nil || resp.Data == nil {
 		return 0, fmt.Errorf("empty write response")
