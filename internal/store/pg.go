@@ -97,7 +97,11 @@ func (g *PG) TagCloud(ctx context.Context) ([]domain.Tag, error) {
 var _ Source = (*PG)(nil)
 
 // ---- doc lookups for the indexing worker (truth read at RUN time — jobs
-// carry ids only, so retries naturally coalesce to current state) ----
+// carry ids only, so retries naturally coalesce to current state).
+// SOFT-DELETED rows count as VANISHED: the worker deletes the DOC. Without
+// the deleted_at filter a soft-deleted published post re-indexes with its
+// stale status — items stay honest (hydration drops them) but the engine's
+// TOTAL inflates. Found by the mellon cutover e2e: total 13, truth 12. ----
 
 func (g *PG) PostDocByID(ctx context.Context, id int64) (search.PostDoc, bool, error) {
 	var d search.PostDoc
@@ -114,7 +118,7 @@ func (g *PG) PostDocByID(ctx context.Context, id int64) (search.PostDoc, bool, e
 		           WHERE pt.post_id = p.id),
 		         '{}')
 		FROM posts p
-		WHERE p.id = $1`, id).
+		WHERE p.id = $1 AND p.deleted_at IS NULL`, id).
 		Scan(&d.ID, &d.Slug, &d.Title, &d.Subtitle, &d.Preview, &d.Content,
 			&status, &d.Day, &d.Date, &d.ReadTime, &d.Rank, &tags)
 	if err != nil {

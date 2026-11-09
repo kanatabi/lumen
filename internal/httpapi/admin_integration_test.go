@@ -310,6 +310,36 @@ func TestAdminLifecycle(t *testing.T) {
 		_, _ = harness.admin(http.MethodDelete, "/admin/posts/integration-illegal", "")
 	})
 
+	// ---- soft delete converges the DOC, not just the rows ----
+	// The mellon cutover e2e caught the phantom-total bug: PostDocByID read
+	// the soft-deleted row (deleted_at ignored), the worker RE-indexed the
+	// stale published doc — items stayed honest (hydration drops what truth
+	// hides) but the engine's total inflated by ghosts. The fix is the
+	// deleted_at filter; this test pins the arithmetic: total == len(items)
+	// after publish+delete, exactly as the contract demands.
+	t.Run("soft delete removes the DOC — totals never carry ghosts", func(t *testing.T) {
+		d := `{"slug":"integration-phantom-check","title":"Phantom Check","subtitle":"","preview":"p","date":"2026-11-09","tags":[],"content":"body\n","thumbnail":null}`
+		harness.mustOK("POST", "/admin/posts", d)
+		code, _ := harness.admin("POST", "/admin/posts/integration-phantom-check/publish", "")
+		if code != 200 {
+			t.Fatalf("publish code %d", code)
+		}
+		harness.drain()
+		harness.mustOK("DELETE", "/admin/posts/integration-phantom-check", "")
+		harness.drain()
+		pub := harness.mustOK("GET", "/api/posts?limit=100", "")
+		var m map[string]any
+		_ = json.Unmarshal(pub, &m)
+		total := int(m["total"].(float64))
+		items := m["items"].([]any)
+		if total != len(items) {
+			t.Fatalf("phantom doc survived: total %d != items %d (engine carries a soft-deleted published row)", total, len(items))
+		}
+		if bytes.Contains(pub, []byte("integration-phantom-check")) {
+			t.Fatal("deleted post still served")
+		}
+	})
+
 	// ---- the seeded leak bait ----
 	t.Run("seeded draft never surfaces on any public path", func(t *testing.T) {
 		if code, _ := harness.do(http.MethodGet, "/api/posts/drafts-are-fantasies", "", ""); code != http.StatusNotFound {
