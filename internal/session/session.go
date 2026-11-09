@@ -29,14 +29,14 @@ type Claims struct {
 // MintSession signs a session for (username, current token_version).
 // The caller reads tv from the users row INSIDE the auth check it just
 // passed — tokens assert facts, not hopes.
-func MintSession(secret, username string, tv int) (string, int, error) {
+func MintSession(secret, username string, tokenVersion int) (string, int, error) {
 	now := time.Now().UTC()
 	nonce := make([]byte, 8)
 	if _, err := rand.Read(nonce); err != nil {
 		return "", 0, err
 	}
 	claims := Claims{
-		TV: tv,
+		TV: tokenVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   username,
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -44,12 +44,12 @@ func MintSession(secret, username string, tv int) (string, int, error) {
 			ID:        base64.RawURLEncoding.EncodeToString(nonce),
 		},
 	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	s, err := tok.SignedString([]byte(secret))
+	builder := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := builder.SignedString([]byte(secret))
 	if err != nil {
 		return "", 0, err
 	}
-	return s, TTLSeconds, nil
+	return signed, TTLSeconds, nil
 }
 
 var ErrInvalidToken = errors.New("invalid token")

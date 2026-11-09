@@ -31,17 +31,17 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	var src store.Source
+	var truth store.Source
 	var engine service.Engine
-	var eng *search.Service
-	var qc *queue.Client
+	var searchEngine *search.Service
+	var queueClient *queue.Client
 	var adminDeps *httpapi.AdminDeps
 	if cfg.FixturePath != "" { // offline dev twin — logs say so, loudly
 		m, err := store.Mem(cfg.FixturePath)
 		if err != nil {
 			log.Fatalf("fixture store: %v", err)
 		}
-		src = m
+		truth = m
 		engTwin, ok := m.(service.Engine)
 		if !ok {
 			log.Fatal("fixture twin must implement the engine seam")
@@ -60,7 +60,7 @@ func main() {
 			log.Fatalf("db ping: %v", err)
 		}
 		pg := store.NewPG(pool)
-		src = pg
+		truth = pg
 
 		// the engine is the read path (§4); queue+worker keep it a faithful
 		// projection of truth. Pure-engine posture: absent config is a
@@ -68,29 +68,29 @@ func main() {
 		if cfg.MeiliURL == "" {
 			log.Fatal("LUMEN_MEILI_URL required: Meilisearch is the read path (§4 ruling) — fixture mode is the offline escape hatch")
 		}
-		eng = search.New(cfg.MeiliURL, cfg.MeiliKey)
-		engine = eng
+		searchEngine = search.New(cfg.MeiliURL, cfg.MeiliKey)
+		engine = searchEngine
 		bootCtx, bootCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer bootCancel()
-		if err := eng.Ensure(bootCtx); err != nil {
+		if err := searchEngine.Ensure(bootCtx); err != nil {
 			log.Fatalf("meili bootstrap: %v", err)
 		}
-		qc, err = queue.New(bootCtx, pool, pg, eng)
+		queueClient, err = queue.New(bootCtx, pool, pg, searchEngine)
 		if err != nil {
 			log.Fatalf("queue: %v", err)
 		}
-		if err := qc.Start(bootCtx); err != nil {
+		if err := queueClient.Start(bootCtx); err != nil {
 			log.Fatalf("queue start: %v", err)
 		}
-		defer func() { _ = qc.Stop(context.Background()) }()
+		defer func() { _ = queueClient.Stop(context.Background()) }()
 		adminDeps = &httpapi.AdminDeps{
 			Pool:      pg,
-			Queue:     qc,
+			Queue:     queueClient,
 			JWTSecret: cfg.SessionSecret,
 			Limiter:   throttle.New(0), // per-replica in-memory backoff (documented)
 		}
 		if cfg.Media.Bucket != "" {
-			ms, _, err := media.NewS3(bootCtx, media.Config{
+			mediaStore, _, err := media.NewS3(bootCtx, media.Config{
 				Endpoint:     cfg.Media.Endpoint,
 				Region:       cfg.Media.Region,
 				Bucket:       cfg.Media.Bucket,
@@ -103,7 +103,7 @@ func main() {
 			if err != nil {
 				log.Fatalf("media store: %v", err)
 			}
-			adminDeps.Media = ms
+			adminDeps.Media = mediaStore
 			adminDeps.MediaEndpoint, adminDeps.MediaBucket, adminDeps.MediaCDNBase =
 				cfg.Media.Endpoint, cfg.Media.Bucket, cfg.Media.CDNBase
 			if cfg.Media.CreateBucket {
@@ -115,11 +115,11 @@ func main() {
 			log.Print("media: not configured — POST /admin/photos answers 503 honestly (§5)")
 		}
 		if bao.Enabled() {
-			bc, err := bao.New()
+			baoClient, err := bao.New()
 			if err != nil {
 				log.Fatalf("bao client: %v", err)
 			}
-			adminDeps.Bao = bc
+			adminDeps.Bao = baoClient
 			log.Print("secrets plane: configured (§9 relay live)")
 		} else {
 			log.Print("secrets plane: not configured — /admin/bao absent (honest, §9)")
@@ -127,7 +127,7 @@ func main() {
 		log.Print("store: postgres · engine: meilisearch · queue: river · admin: jwt sessions")
 	}
 
-	handler := httpapi.New(service.New(src, engine), eng, adminDeps).Router()
+	handler := httpapi.New(service.New(truth, engine), searchEngine, adminDeps).Router()
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           handler,

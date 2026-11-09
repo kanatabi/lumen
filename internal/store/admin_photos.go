@@ -107,16 +107,16 @@ func (g *PG) ListAdminPhotos(ctx context.Context, o PhotoListOpts) (int, []Admin
 	if pageSize <= 0 {
 		pageSize = 24
 	}
-	qs := strings.Join(where, " AND ")
+	whereSQL := strings.Join(where, " AND ")
 
 	var total int
-	if err := g.pool.QueryRow(ctx, `SELECT count(*) FROM photos WHERE `+qs, args...).Scan(&total); err != nil {
+	if err := g.pool.QueryRow(ctx, `SELECT count(*) FROM photos WHERE `+whereSQL, args...).Scan(&total); err != nil {
 		return 0, nil, err
 	}
 	totalPages := max(1, (total+pageSize-1)/pageSize)
 	page := min(max(o.Page, 1), totalPages) // clamp, never empty-error
 	rows, err := g.pool.Query(ctx,
-		`SELECT `+photoCols+` FROM photos WHERE `+qs+
+		`SELECT `+photoCols+` FROM photos WHERE `+whereSQL+
 			` ORDER BY `+sortCol+` `+dir+`, id ASC LIMIT $`+itoa(len(args)+1)+` OFFSET $`+itoa(len(args)+2),
 		append(args, pageSize, (page-1)*pageSize)...)
 	if err != nil {
@@ -185,7 +185,7 @@ type PhotoPatch struct {
 
 // UpdateAdminPhoto: curation metadata (§8 PATCH; last-write-wins — photos
 // carry no rev, single-author album truth). Unknown collection → 400.
-func (g *PG) UpdateAdminPhoto(ctx context.Context, id int64, in PhotoPatch, qc indexEnqueuer) (PhotoDocRow, error) {
+func (g *PG) UpdateAdminPhoto(ctx context.Context, id int64, in PhotoPatch, enqueuer indexEnqueuer) (PhotoDocRow, error) {
 	err := pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT 1 FROM photos WHERE id = $1 FOR UPDATE`, id); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -218,7 +218,7 @@ func (g *PG) UpdateAdminPhoto(ctx context.Context, id int64, in PhotoPatch, qc i
 				return err
 			}
 		}
-		return qc.InsertIndexPhotoTx(ctx, tx, id)
+		return enqueuer.InsertIndexPhotoTx(ctx, tx, id)
 	})
 	if err != nil {
 		return PhotoDocRow{}, err
@@ -230,7 +230,7 @@ func (g *PG) UpdateAdminPhoto(ctx context.Context, id int64, in PhotoPatch, qc i
 // library + the GC ledger (media_assets) + the index job — ONE transaction
 // (§5: nothing becomes public before the probe; §8: fresh photos are
 // gallery=false, collection=null — surfacing is a deliberate act).
-func (g *PG) CreateAdminPhotoFromUpload(ctx context.Context, src, alt string, width, height int, sha, key string, qc indexEnqueuer) (PhotoDocRow, error) {
+func (g *PG) CreateAdminPhotoFromUpload(ctx context.Context, src, alt string, width, height int, sha, key string, enqueuer indexEnqueuer) (PhotoDocRow, error) {
 	var id int64
 	err := pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx,
@@ -244,7 +244,7 @@ func (g *PG) CreateAdminPhotoFromUpload(ctx context.Context, src, alt string, wi
 			 ON CONFLICT (path) DO NOTHING`, key, sha); err != nil {
 			return err
 		}
-		return qc.InsertIndexPhotoTx(ctx, tx, id)
+		return enqueuer.InsertIndexPhotoTx(ctx, tx, id)
 	})
 	if err != nil {
 		return PhotoDocRow{}, err
@@ -255,7 +255,7 @@ func (g *PG) CreateAdminPhotoFromUpload(ctx context.Context, src, alt string, wi
 // DeleteAdminPhoto removes the LIBRARY ROW; the object outlives it until
 // storage GC (§8). The worker's truth-read finds the row gone and deletes
 // the DOC — convergence by construction.
-func (g *PG) DeleteAdminPhoto(ctx context.Context, id int64, qc indexEnqueuer) error {
+func (g *PG) DeleteAdminPhoto(ctx context.Context, id int64, enqueuer indexEnqueuer) error {
 	return pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `DELETE FROM photos WHERE id = $1`, id)
 		if err != nil {
@@ -264,6 +264,6 @@ func (g *PG) DeleteAdminPhoto(ctx context.Context, id int64, qc indexEnqueuer) e
 		if tag.RowsAffected() == 0 {
 			return nil // idempotent
 		}
-		return qc.InsertIndexPhotoTx(ctx, tx, id)
+		return enqueuer.InsertIndexPhotoTx(ctx, tx, id)
 	})
 }

@@ -21,15 +21,16 @@ import (
 )
 
 type Server struct {
-	svc         *service.Service
-	eng         *search.Service // nil in fixture mode (readyz says so)
-	engineAdmin *search.Service // same pointer; admin door methods live on it
-	admin       *AdminDeps      // nil ⇒ no /admin surface at all
+	svc *service.Service
+	// searchEngine is nil in fixture mode (readyz says so honestly); it serves
+	// the public §1 surface AND the admin door (§8) — one seam, one field.
+	searchEngine *search.Service
+	admin        *AdminDeps // nil ⇒ no /admin surface at all
 }
 
-// New: svc/eng for the public §1 surface; admin (nil-able) mounts §8.
-func New(svc *service.Service, eng *search.Service, admin *AdminDeps) *Server {
-	return &Server{svc: svc, eng: eng, engineAdmin: eng, admin: admin}
+// New: svc/searchEngine for the public §1 surface; admin (nil-able) mounts §8.
+func New(svc *service.Service, searchEngine *search.Service, admin *AdminDeps) *Server {
+	return &Server{svc: svc, searchEngine: searchEngine, admin: admin}
 }
 
 // jsonOnly declares intent, not protection — the header is set per response by
@@ -70,11 +71,11 @@ func (s *Server) Router() http.Handler {
 	r.Get("/readyz", func(w http.ResponseWriter, rq *http.Request) {
 		ctx, cancel := context.WithTimeout(rq.Context(), 2*time.Second)
 		defer cancel()
-		if s.eng == nil {
+		if s.searchEngine == nil {
 			writeErr(w, http.StatusServiceUnavailable, "engine not configured (fixture mode)")
 			return
 		}
-		if err := s.eng.Ready(ctx); err != nil {
+		if err := s.searchEngine.Ready(ctx); err != nil {
 			writeErr(w, http.StatusServiceUnavailable, "engine unreachable")
 			return
 		}

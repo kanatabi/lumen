@@ -38,13 +38,13 @@ import (
 )
 
 type adminHarness struct {
-	t       *testing.T
-	h       http.Handler
-	pool    *pgxpool.Pool
-	qc      *queue.Client
-	deps    *httpapi.AdminDeps
-	rebuild func() // re-mount the router after mutating deps (e.g. adding §9)
-	token   string
+	t           *testing.T
+	h           http.Handler
+	pool        *pgxpool.Pool
+	queueClient *queue.Client
+	deps        *httpapi.AdminDeps
+	rebuild     func() // re-mount the router after mutating deps (e.g. adding §9)
+	token       string
 }
 
 func newAdminHarness(t *testing.T) *adminHarness {
@@ -100,21 +100,21 @@ func newAdminHarness(t *testing.T) *adminHarness {
 	})
 
 	secret := "integration-session-secret-32-bytes!"
-	eng := search.New(mustEnvOr(t, "LUMEN_MEILI_URL"), mustEnvOr(t, "LUMEN_MEILI_KEY"))
-	if err := eng.Ensure(ctx); err != nil {
+	searchEngine := search.New(mustEnvOr(t, "LUMEN_MEILI_URL"), mustEnvOr(t, "LUMEN_MEILI_KEY"))
+	if err := searchEngine.Ensure(ctx); err != nil {
 		t.Fatal(err)
 	}
-	qc, err := queue.New(ctx, pool, pg, eng)
+	queueClient, err := queue.New(ctx, pool, pg, searchEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := qc.Start(ctx); err != nil {
+	if err := queueClient.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = qc.Stop(context.Background()) })
+	t.Cleanup(func() { _ = queueClient.Stop(context.Background()) })
 
-	deps := &httpapi.AdminDeps{Pool: pg, Queue: qc, JWTSecret: secret, Limiter: throttle.New(time.Minute)}
-	build := func() http.Handler { return httpapi.New(service.New(pg, eng), eng, deps).Router() }
+	deps := &httpapi.AdminDeps{Pool: pg, Queue: queueClient, JWTSecret: secret, Limiter: throttle.New(time.Minute)}
+	build := func() http.Handler { return httpapi.New(service.New(pg, searchEngine), searchEngine, deps).Router() }
 	// media relay: an EMBEDDED S3-protocol server (gofakes3 + s3mem) — a
 	// real SigV4 endpoint, in-process and deterministic; no registry luck.
 	if os.Getenv("LUMEN_MEDIA") == "1" {
@@ -124,7 +124,7 @@ func newAdminHarness(t *testing.T) *adminHarness {
 		}
 		s3srv := httptest.NewServer(gofakes3.New(backend).Server())
 		t.Cleanup(s3srv.Close)
-		mcfg := media.Config{
+		mediaConfig := media.Config{
 			Endpoint:  s3srv.URL,
 			Region:    "us-east-1",
 			Bucket:    "lumen-media-test",
@@ -132,17 +132,17 @@ func newAdminHarness(t *testing.T) *adminHarness {
 			SecretKey: "test",
 			ForcePath: true,
 		}
-		ms, _, err := media.NewS3(ctx, mcfg)
+		mediaStore, _, err := media.NewS3(ctx, mediaConfig)
 		if err != nil {
 			t.Fatal(err)
 		}
-		deps.Media, deps.MediaEndpoint, deps.MediaBucket, deps.MediaCDNBase = ms, mcfg.Endpoint, mcfg.Bucket, ""
+		deps.Media, deps.MediaEndpoint, deps.MediaBucket, deps.MediaCDNBase = mediaStore, mediaConfig.Endpoint, mediaConfig.Bucket, ""
 	}
-	ah := &adminHarness{t: t, pool: pool, qc: qc, deps: deps}
-	ah.h = build()
-	ah.rebuild = func() { ah.h = build() }
-	ah.token = ah.login("fzr-test", "integration-pw")
-	return ah
+	harness := &adminHarness{t: t, pool: pool, queueClient: queueClient, deps: deps}
+	harness.h = build()
+	harness.rebuild = func() { harness.h = build() }
+	harness.token = harness.login("fzr-test", "integration-pw")
+	return harness
 }
 
 func (a *adminHarness) login(user, pw string) string {
@@ -211,26 +211,26 @@ func (a *adminHarness) drain() {
 }
 
 func TestAdminLifecycle(t *testing.T) {
-	ah := newAdminHarness(t)
+	harness := newAdminHarness(t)
 
 	// ---- auth gates ----
 	t.Run("401 without or with a bogus bearer", func(t *testing.T) {
-		if code, _ := ah.do(http.MethodGet, "/admin/posts", "", ""); code != http.StatusUnauthorized {
+		if code, _ := harness.do(http.MethodGet, "/admin/posts", "", ""); code != http.StatusUnauthorized {
 			t.Fatalf("no-token code %d", code)
 		}
-		if code, _ := ah.do(http.MethodGet, "/admin/posts", "", "garbage"); code != http.StatusUnauthorized {
+		if code, _ := harness.do(http.MethodGet, "/admin/posts", "", "garbage"); code != http.StatusUnauthorized {
 			t.Fatalf("garbage-token code %d", code)
 		}
 	})
 	t.Run("wrong password and unknown user are one indistinguishable message", func(t *testing.T) {
-		_, r1 := ah.do(http.MethodPost, "/admin/session", `{"username":"fzr-test","password":"nope"}`, "")
-		_, r2 := ah.do(http.MethodPost, "/admin/session", `{"username":"ghost-user-zz","password":"nope"}`, "")
+		_, r1 := harness.do(http.MethodPost, "/admin/session", `{"username":"fzr-test","password":"nope"}`, "")
+		_, r2 := harness.do(http.MethodPost, "/admin/session", `{"username":"ghost-user-zz","password":"nope"}`, "")
 		if string(r1) != string(r2) {
 			t.Fatalf("enumeration leak: %s vs %s", r1, r2)
 		}
 	})
 	t.Run("empty credentials 400", func(t *testing.T) {
-		if code, _ := ah.do(http.MethodPost, "/admin/session", `{"username":"","password":"x"}`, ""); code != http.StatusBadRequest {
+		if code, _ := harness.do(http.MethodPost, "/admin/session", `{"username":"","password":"x"}`, ""); code != http.StatusBadRequest {
 			t.Fatalf("code %d", code)
 		}
 	})
@@ -238,9 +238,9 @@ func TestAdminLifecycle(t *testing.T) {
 	// ---- CRUD + CAS ----
 	draft := `{"slug":"integration-publish-me","title":"Integration Publish Me","subtitle":"machine proof","preview":"","date":"2026-11-08","tags":["integration","queues"],"content":"# Integration Publish Me\n\nThe first paragraph becomes the preview by default.\n\n` + "```" + `go\nfunc main() {}` + "```" + `\n","thumbnail":null}`
 	t.Run("CRUD, publish machine, idempotence", func(t *testing.T) {
-		defer func() { _, _ = ah.admin(http.MethodDelete, "/admin/posts/integration-publish-me", "") }()
+		defer func() { _, _ = harness.admin(http.MethodDelete, "/admin/posts/integration-publish-me", "") }()
 
-		code, res := ah.admin(http.MethodPost, "/admin/posts", draft)
+		code, res := harness.admin(http.MethodPost, "/admin/posts", draft)
 		if code != http.StatusCreated {
 			t.Fatalf("create %d: %s", code, res)
 		}
@@ -249,16 +249,16 @@ func TestAdminLifecycle(t *testing.T) {
 		if d.Status != "draft" || d.Rev != 1 {
 			t.Fatalf("fresh draft: %+v", d)
 		}
-		if code, _ := ah.admin(http.MethodPost, "/admin/posts", draft); code != http.StatusConflict {
+		if code, _ := harness.admin(http.MethodPost, "/admin/posts", draft); code != http.StatusConflict {
 			t.Fatalf("dup slug code %d", code)
 		}
 
 		upd := `{"draft":{"slug":"integration-publish-me","title":"Renamed Integration","subtitle":"s","preview":"","date":"2026-11-08","tags":["integration"],"content":"body\n","thumbnail":null},"rev":99}`
-		if code, _ := ah.admin(http.MethodPut, "/admin/posts/integration-publish-me", upd); code != http.StatusConflict {
+		if code, _ := harness.admin(http.MethodPut, "/admin/posts/integration-publish-me", upd); code != http.StatusConflict {
 			t.Fatalf("stale rev should 409")
 		}
 		upd = strings.Replace(upd, `"rev":99`, `"rev":1`, 1)
-		res = ah.mustOK(http.MethodPut, "/admin/posts/integration-publish-me", upd)
+		res = harness.mustOK(http.MethodPut, "/admin/posts/integration-publish-me", upd)
 		var d2 store.AdminPostDetail
 		_ = json.Unmarshal(res, &d2)
 		if d2.Rev != 2 || d2.Title != "Renamed Integration" {
@@ -266,7 +266,7 @@ func TestAdminLifecycle(t *testing.T) {
 		}
 
 		// the §2 publish unit of work: derivations land
-		res = ah.mustOK(http.MethodPost, "/admin/posts/integration-publish-me/publish", "")
+		res = harness.mustOK(http.MethodPost, "/admin/posts/integration-publish-me/publish", "")
 		var p store.AdminPostDetail
 		_ = json.Unmarshal(res, &p)
 		if p.Status != "published" || p.PublishedAt == nil || p.ReadTime < 1 {
@@ -279,40 +279,40 @@ func TestAdminLifecycle(t *testing.T) {
 		}
 
 		// idempotent re-publish: byte-identical inputs must not move rank
-		rankA := rankOf(ah, "integration-publish-me")
-		ah.mustOK(http.MethodPost, "/admin/posts/integration-publish-me/publish", "")
-		if rankB := rankOf(ah, "integration-publish-me"); rankA != rankB {
+		rankA := rankOf(harness, "integration-publish-me")
+		harness.mustOK(http.MethodPost, "/admin/posts/integration-publish-me/publish", "")
+		if rankB := rankOf(harness, "integration-publish-me"); rankA != rankB {
 			t.Fatalf("idempotent re-publish moved rank %d→%d", rankA, rankB)
 		}
 
 		// surfaced on the PUBLIC list after the queue drains
-		ah.drain()
-		pub := ah.mustOK(http.MethodGet, "/api/posts?limit=100", "")
+		harness.drain()
+		pub := harness.mustOK(http.MethodGet, "/api/posts?limit=100", "")
 		if !bytes.Contains(pub, []byte("integration-publish-me")) {
 			t.Fatal("published post missing from the public list")
 		}
 
 		// unpublish → vanishes from public, legal re-publish brings it back
-		ah.mustOK(http.MethodPost, "/admin/posts/integration-publish-me/unpublish", "")
-		ah.drain()
-		pub = ah.mustOK(http.MethodGet, "/api/posts?limit=100", "")
+		harness.mustOK(http.MethodPost, "/admin/posts/integration-publish-me/unpublish", "")
+		harness.drain()
+		pub = harness.mustOK(http.MethodGet, "/api/posts?limit=100", "")
 		if bytes.Contains(pub, []byte("integration-publish-me")) {
 			t.Fatal("unpublished post LEAKED to the public list")
 		}
 
 		// machine: draft→unpublish directly is the illegal edge
 		illegal := `{"slug":"integration-illegal","title":"Illegal","subtitle":"","preview":"x","date":"2026-11-08","tags":[],"content":"x\n","thumbnail":null}`
-		ah.mustOK(http.MethodPost, "/admin/posts", illegal)
-		code, _ = ah.admin(http.MethodPost, "/admin/posts/integration-illegal/unpublish", "")
+		harness.mustOK(http.MethodPost, "/admin/posts", illegal)
+		code, _ = harness.admin(http.MethodPost, "/admin/posts/integration-illegal/unpublish", "")
 		if code != http.StatusConflict {
 			t.Fatalf("draft→unpublished should 409, got %d", code)
 		}
-		_, _ = ah.admin(http.MethodDelete, "/admin/posts/integration-illegal", "")
+		_, _ = harness.admin(http.MethodDelete, "/admin/posts/integration-illegal", "")
 	})
 
 	// ---- the seeded leak bait ----
 	t.Run("seeded draft never surfaces on any public path", func(t *testing.T) {
-		if code, _ := ah.do(http.MethodGet, "/api/posts/drafts-are-fantasies", "", ""); code != http.StatusNotFound {
+		if code, _ := harness.do(http.MethodGet, "/api/posts/drafts-are-fantasies", "", ""); code != http.StatusNotFound {
 			t.Fatalf("draft detail code %d", code)
 		}
 	})
@@ -336,7 +336,7 @@ func TestAdminLifecycle(t *testing.T) {
 		_, _ = fw.Write(raw.Bytes())
 		_ = mw.Close()
 
-		code, res := ah.do(http.MethodPost, "/admin/photos", body.String(), ah.token)
+		code, res := harness.do(http.MethodPost, "/admin/photos", body.String(), harness.token)
 		// httptest.NewRequest ignores content-type from the string body —
 		// build the request manually to carry the multipart boundary
 		if code != http.StatusUnsupportedMediaType && code != http.StatusBadRequest {
@@ -349,10 +349,10 @@ func TestAdminLifecycle(t *testing.T) {
 				t.Fatalf("fresh upload defaults wrong: %+v", got)
 			}
 			t.Cleanup(func() {
-				_, _ = ah.admin(http.MethodDelete, "/admin/photos/"+got.ID, "")
+				_, _ = harness.admin(http.MethodDelete, "/admin/photos/"+got.ID, "")
 			})
-			ah.drain()
-			list := ah.mustOK(http.MethodGet, "/admin/photos?limit=100", "")
+			harness.drain()
+			list := harness.mustOK(http.MethodGet, "/admin/photos?limit=100", "")
 			if !bytes.Contains(list, []byte(got.ID)) {
 				t.Fatal("uploaded photo missing from admin list")
 			}
@@ -364,9 +364,9 @@ func TestAdminLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.Header.Set("Content-Type", mw.FormDataContentType())
-		req.Header.Set("Authorization", "Bearer "+ah.token)
+		req.Header.Set("Authorization", "Bearer "+harness.token)
 		rec := httptest.NewRecorder()
-		ah.h.ServeHTTP(rec, req)
+		harness.h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("upload code %d: %s", rec.Code, rec.Body)
 		}
@@ -375,9 +375,9 @@ func TestAdminLifecycle(t *testing.T) {
 		if !strings.Contains(got.Src, "/media/") {
 			t.Fatalf("src: %s", got.Src)
 		}
-		t.Cleanup(func() { _, _ = ah.admin(http.MethodDelete, "/admin/photos/"+got.ID, "") })
-		ah.drain()
-		list := ah.mustOK(http.MethodGet, "/admin/photos?limit=100", "")
+		t.Cleanup(func() { _, _ = harness.admin(http.MethodDelete, "/admin/photos/"+got.ID, "") })
+		harness.drain()
+		list := harness.mustOK(http.MethodGet, "/admin/photos?limit=100", "")
 		if !bytes.Contains(list, []byte(got.ID)) {
 			t.Fatal("uploaded photo missing from admin list")
 		}
@@ -386,23 +386,23 @@ func TestAdminLifecycle(t *testing.T) {
 	// ---- photos ----
 	t.Run("photo lifecycle on the suite's OWN row (siblings untouched)", func(t *testing.T) {
 		defer func() {
-			_, _ = ah.pool.Exec(context.Background(), `DELETE FROM photos WHERE src LIKE 'https://integration.invalid/%'`)
+			_, _ = harness.pool.Exec(context.Background(), `DELETE FROM photos WHERE src LIKE 'https://integration.invalid/%'`)
 		}()
 		var pid int64
-		if err := ah.pool.QueryRow(context.Background(),
+		if err := harness.pool.QueryRow(context.Background(),
 			`INSERT INTO photos(src, alt, width, height, sort, featured, gallery)
 			 VALUES ('https://integration.invalid/photo-1', 'integration photo one', 100, 200, 999, FALSE, TRUE)
 			 RETURNING id`).Scan(&pid); err != nil {
 			t.Fatal(err)
 		}
-		if err := ah.qc.EnqueueIndexPhoto(context.Background(), pid); err != nil {
+		if err := harness.queueClient.EnqueueIndexPhoto(context.Background(), pid); err != nil {
 			t.Fatal(err)
 		}
-		ah.drain()
+		harness.drain()
 		idS := strconv.FormatInt(pid, 10)
 
 		// indexed & admin-visible
-		res := ah.mustOK(http.MethodGet, "/admin/photos/"+idS, "")
+		res := harness.mustOK(http.MethodGet, "/admin/photos/"+idS, "")
 		if !bytes.Contains(res, []byte("integration photo one")) {
 			t.Fatalf("created photo not admin-visible: %s", res)
 		}
@@ -410,8 +410,8 @@ func TestAdminLifecycle(t *testing.T) {
 		// references: embed its src in a post body, the scan finds exactly it
 		src := "https://integration.invalid/photo-1"
 		emb := `{"slug":"integration-refs","title":"Refs","subtitle":"","preview":"p","date":"2026-11-08","tags":[],"content":"look: ` + src + ` here\n","thumbnail":null}`
-		ah.mustOK(http.MethodPost, "/admin/posts", emb)
-		res = ah.mustOK(http.MethodGet, "/admin/photos/"+idS+"/references", "")
+		harness.mustOK(http.MethodPost, "/admin/posts", emb)
+		res = harness.mustOK(http.MethodGet, "/admin/photos/"+idS+"/references", "")
 		var refs []store.PhotoRef
 		_ = json.Unmarshal(res, &refs)
 		if len(refs) != 1 || refs[0].Slug != "integration-refs" {
@@ -419,46 +419,46 @@ func TestAdminLifecycle(t *testing.T) {
 		}
 
 		// patch: unknown collection 400; valid writes land
-		if code, _ := ah.admin(http.MethodPatch, "/admin/photos/"+idS, `{"collection":"does-not-exist"}`); code != http.StatusBadRequest {
+		if code, _ := harness.admin(http.MethodPatch, "/admin/photos/"+idS, `{"collection":"does-not-exist"}`); code != http.StatusBadRequest {
 			t.Fatalf("unknown collection code %d", code)
 		}
-		res = ah.mustOK(http.MethodPatch, "/admin/photos/"+idS, `{"alt":"patched integration alt","gallery":false}`)
+		res = harness.mustOK(http.MethodPatch, "/admin/photos/"+idS, `{"alt":"patched integration alt","gallery":false}`)
 		var got store.AdminPhoto
 		_ = json.Unmarshal(res, &got)
 		if got.Alt != "patched integration alt" || got.Gallery {
 			t.Fatalf("patch result %+v", got)
 		}
-		ah.drain()
+		harness.drain()
 		// un-galleryed: must not surface on the PUBLIC list (truth + engine agree)
-		pub := ah.mustOK(http.MethodGet, "/api/photos", "")
+		pub := harness.mustOK(http.MethodGet, "/api/photos", "")
 		if bytes.Contains(pub, []byte(src)) {
 			t.Fatal("un-galleryed photo leaked to the public list")
 		}
 
 		// delete → row gone (404), doc converges out of the engine
-		ah.mustOK(http.MethodDelete, "/admin/photos/"+idS, "")
-		if code, _ := ah.admin(http.MethodGet, "/admin/photos/"+idS, ""); code != http.StatusNotFound {
+		harness.mustOK(http.MethodDelete, "/admin/photos/"+idS, "")
+		if code, _ := harness.admin(http.MethodGet, "/admin/photos/"+idS, ""); code != http.StatusNotFound {
 			t.Fatalf("deleted photo code %d", code)
 		}
-		ah.drain()
-		if _, res := ah.admin(http.MethodGet, "/admin/search?q=patched%20integration", ""); bytes.Contains(res, []byte(`"id":"`+idS+`"`)) {
+		harness.drain()
+		if _, res := harness.admin(http.MethodGet, "/admin/search?q=patched%20integration", ""); bytes.Contains(res, []byte(`"id":"`+idS+`"`)) {
 			t.Fatal("deleted photo doc still in the engine")
 		}
-		_, _ = ah.admin(http.MethodDelete, "/admin/posts/integration-refs", "")
+		_, _ = harness.admin(http.MethodDelete, "/admin/posts/integration-refs", "")
 	})
 
 	// ---- vocab ----
 	t.Run("eager vocabulary: slugified creation, 409 duplicates", func(t *testing.T) {
-		res := ah.mustOK(http.MethodPost, "/admin/tags", `{"name":"Integration Test Tag"}`)
+		res := harness.mustOK(http.MethodPost, "/admin/tags", `{"name":"Integration Test Tag"}`)
 		var tg store.TagRowOut
 		_ = json.Unmarshal(res, &tg)
 		if tg.Name != "integration-test-tag" {
 			t.Fatalf("slugified name %q", tg.Name)
 		}
-		if code, _ := ah.admin(http.MethodPost, "/admin/tags", `{"name":"integration test tag"}`); code != http.StatusConflict {
+		if code, _ := harness.admin(http.MethodPost, "/admin/tags", `{"name":"integration test tag"}`); code != http.StatusConflict {
 			t.Fatalf("dup tag code %d", code)
 		}
-		res = ah.mustOK(http.MethodPost, "/admin/collections", `{"name":"Night Series"}`)
+		res = harness.mustOK(http.MethodPost, "/admin/collections", `{"name":"Night Series"}`)
 		var c store.CollectionRowOut
 		_ = json.Unmarshal(res, &c)
 		if c.Name != "night-series" {
@@ -468,10 +468,10 @@ func TestAdminLifecycle(t *testing.T) {
 
 	// ---- admin search door ----
 	t.Run("admin search: three groups, drafts included, ≤8 each, empty-q shape", func(t *testing.T) {
-		ah.drain()
+		harness.drain()
 		// 'leak' is in the DRAFT's title ("A draft that must never leak");
 		// the admin door has no status filter, so it must surface
-		res := ah.mustOK(http.MethodGet, "/admin/search?q=leak", "")
+		res := harness.mustOK(http.MethodGet, "/admin/search?q=leak", "")
 		var out struct {
 			Posts  []store.AdminPostSummary `json:"posts"`
 			Photos []store.AdminPhoto       `json:"photos"`
@@ -484,7 +484,7 @@ func TestAdminLifecycle(t *testing.T) {
 		if len(out.Posts) > 8 || len(out.Photos) > 8 || len(out.Tags) > 8 {
 			t.Fatal("≤8 each")
 		}
-		res = ah.mustOK(http.MethodGet, "/admin/search?q=", "")
+		res = harness.mustOK(http.MethodGet, "/admin/search?q=", "")
 		if !bytes.Contains(res, []byte(`"posts":[]`)) {
 			t.Fatalf("empty-q shape: %s", res)
 		}
@@ -492,23 +492,23 @@ func TestAdminLifecycle(t *testing.T) {
 
 	// ---- revocation ----
 	t.Run("logout bumps tv — the live token dies instantly", func(t *testing.T) {
-		live := ah.token
-		if code, _ := ah.do(http.MethodGet, "/admin/posts", "", live); code != http.StatusOK {
+		live := harness.token
+		if code, _ := harness.do(http.MethodGet, "/admin/posts", "", live); code != http.StatusOK {
 			t.Fatalf("pre-revoke code %d", code)
 		}
-		if code, _ := ah.do(http.MethodDelete, "/admin/session", "", live); code != http.StatusNoContent {
+		if code, _ := harness.do(http.MethodDelete, "/admin/session", "", live); code != http.StatusNoContent {
 			t.Fatalf("logout code %d", code)
 		}
-		if code, _ := ah.do(http.MethodGet, "/admin/posts", "", live); code != http.StatusUnauthorized {
+		if code, _ := harness.do(http.MethodGet, "/admin/posts", "", live); code != http.StatusUnauthorized {
 			t.Fatalf("REVOKED token still works: %d", code)
 		}
-		ah.token = ah.login("fzr-test", "integration-pw")
+		harness.token = harness.login("fzr-test", "integration-pw")
 	})
 
 	// ---- throttle ----
 	t.Run("throttle starves credential stuffing", func(t *testing.T) {
 		lim := throttle.New(time.Minute)
-		deps := &httpapi.AdminDeps{Pool: store.NewPG(ah.pool), Queue: nil, JWTSecret: "x", Limiter: lim}
+		deps := &httpapi.AdminDeps{Pool: store.NewPG(harness.pool), Queue: nil, JWTSecret: "x", Limiter: lim}
 		h := httpapi.New(service.New(nil, nil), nil, deps).Router()
 		for i := 0; i < 12; i++ {
 			req := httptest.NewRequest(http.MethodPost, "/admin/session",
@@ -537,11 +537,11 @@ func orDev(v, d string) string {
 	return d
 }
 
-func rankOf(ah *adminHarness, slug string) int {
+func rankOf(harness *adminHarness, slug string) int {
 	var r int
-	err := ah.pool.QueryRow(context.Background(), `SELECT rank FROM posts WHERE slug=$1`, slug).Scan(&r)
+	err := harness.pool.QueryRow(context.Background(), `SELECT rank FROM posts WHERE slug=$1`, slug).Scan(&r)
 	if err != nil {
-		ah.t.Fatal(err)
+		harness.t.Fatal(err)
 	}
 	return r
 }

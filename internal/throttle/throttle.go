@@ -62,11 +62,11 @@ func (l *Limiter) Fail(key string) {
 	if b.consecutive <= 3 {
 		return
 	}
-	exp := time.Duration(1<<(b.consecutive-4)) * time.Second
-	if exp > l.maxBack {
-		exp = l.maxBack
+	backoff := time.Duration(1<<(b.consecutive-4)) * time.Second
+	if backoff > l.maxBack {
+		backoff = l.maxBack
 	}
-	b.penaltyUntil = l.now().Add(exp)
+	b.penaltyUntil = l.now().Add(backoff)
 }
 
 // Success clears an account's history (the stuffing signal resets when the

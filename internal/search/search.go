@@ -66,11 +66,11 @@ func DayInt(date string) int {
 }
 
 type Service struct {
-	m meili.ServiceManager
+	client meili.ServiceManager
 }
 
 func New(url, key string) *Service {
-	return &Service{m: meili.New(url, meili.WithAPIKey(key))}
+	return &Service{client: meili.New(url, meili.WithAPIKey(key))}
 }
 
 // Ensure bootstraps both indexes idempotently: create-if-missing, then
@@ -78,8 +78,8 @@ func New(url, key string) *Service {
 // dev-recreated and long-lived engines identical).
 func (s *Service) Ensure(ctx context.Context) error {
 	for _, uid := range []string{IndexPosts, IndexPhotos} {
-		if _, err := s.m.GetIndex(uid); err != nil {
-			if _, err := s.m.CreateIndex(&meili.IndexConfig{Uid: uid, PrimaryKey: "id"}); err != nil &&
+		if _, err := s.client.GetIndex(uid); err != nil {
+			if _, err := s.client.CreateIndex(&meili.IndexConfig{Uid: uid, PrimaryKey: "id"}); err != nil &&
 				!strings.Contains(err.Error(), "already_exists") {
 				return fmt.Errorf("create index %s: %w", uid, err)
 			}
@@ -91,7 +91,7 @@ func (s *Service) Ensure(ctx context.Context) error {
 		if uid == IndexPhotos {
 			settings = photosSettings()
 		}
-		task, err := s.m.Index(uid).UpdateSettingsWithContext(ctx, settings)
+		task, err := s.client.Index(uid).UpdateSettingsWithContext(ctx, settings)
 		if err != nil {
 			return fmt.Errorf("settings %s: %w", uid, err)
 		}
@@ -127,7 +127,7 @@ func photosSettings() *meili.Settings {
 
 func (s *Service) waitIndex(ctx context.Context, uid string) error {
 	for i := 0; i < 100; i++ {
-		if _, err := s.m.GetIndex(uid); err == nil {
+		if _, err := s.client.GetIndex(uid); err == nil {
 			return nil
 		}
 		select {
@@ -143,7 +143,7 @@ func (s *Service) waitTask(ctx context.Context, task *meili.TaskInfo) error {
 	if task == nil {
 		return nil
 	}
-	if _, err := s.m.WaitForTaskWithContext(ctx, task.TaskUID, 50*time.Millisecond); err != nil {
+	if _, err := s.client.WaitForTaskWithContext(ctx, task.TaskUID, 50*time.Millisecond); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
@@ -163,7 +163,7 @@ func (s *Service) IndexPosts(ctx context.Context, docs []PostDoc) error {
 	if len(docs) == 0 {
 		return nil
 	}
-	task, err := s.m.Index(IndexPosts).UpdateDocumentsWithContext(ctx, docs, primaryKey())
+	task, err := s.client.Index(IndexPosts).UpdateDocumentsWithContext(ctx, docs, primaryKey())
 	if err != nil {
 		return err
 	}
@@ -174,7 +174,7 @@ func (s *Service) DeletePosts(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	task, err := s.m.Index(IndexPosts).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
+	task, err := s.client.Index(IndexPosts).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
 	if err != nil {
 		return err
 	}
@@ -185,7 +185,7 @@ func (s *Service) IndexPhotos(ctx context.Context, docs []PhotoDoc) error {
 	if len(docs) == 0 {
 		return nil
 	}
-	task, err := s.m.Index(IndexPhotos).UpdateDocumentsWithContext(ctx, docs, primaryKey())
+	task, err := s.client.Index(IndexPhotos).UpdateDocumentsWithContext(ctx, docs, primaryKey())
 	if err != nil {
 		return err
 	}
@@ -196,7 +196,7 @@ func (s *Service) DeletePhotos(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	task, err := s.m.Index(IndexPhotos).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
+	task, err := s.client.Index(IndexPhotos).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
 	if err != nil {
 		return err
 	}
@@ -213,6 +213,6 @@ func strIDs(ids []int64) []string {
 
 // Ready powers /readyz: the engine must ANSWER, not just accept TCP.
 func (s *Service) Ready(_ context.Context) error {
-	_, err := s.m.Health()
+	_, err := s.client.Health()
 	return err
 }

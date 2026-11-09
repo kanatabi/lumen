@@ -143,17 +143,17 @@ func (c *Client) client(ctx context.Context) (*api.Client, error) {
 // → apps; each app's children are envs. Names only — the metadata LIST is
 // what a listing returns; bytes never ride a list.
 func (c *Client) ListPaths(ctx context.Context) ([]Path, error) {
-	vc, err := c.client(ctx)
+	tokenClient, err := c.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	apps, err := c.list(ctx, vc, "kv/metadata")
+	apps, err := c.list(ctx, tokenClient, "kv/metadata")
 	if err != nil {
 		return nil, err
 	}
 	out := []Path{}
 	for _, app := range apps {
-		envs, err := c.list(ctx, vc, "kv/metadata/"+app)
+		envs, err := c.list(ctx, tokenClient, "kv/metadata/"+app)
 		if err != nil {
 			continue // an unreadable app subtree is skipped, not fatal
 		}
@@ -170,8 +170,8 @@ func (c *Client) ListPaths(ctx context.Context) ([]Path, error) {
 	return out, nil
 }
 
-func (c *Client) list(ctx context.Context, vc *api.Client, path string) ([]string, error) {
-	resp, err := vc.Logical().ListWithContext(ctx, path)
+func (c *Client) list(ctx context.Context, tokenClient *api.Client, path string) ([]string, error) {
+	resp, err := tokenClient.Logical().ListWithContext(ctx, path)
 	if err != nil || resp == nil || resp.Data == nil {
 		return nil, err
 	}
@@ -187,7 +187,7 @@ func (c *Client) list(ctx context.Context, vc *api.Client, path string) ([]strin
 
 // Read fetches one version (0/absent = current).
 func (c *Client) Read(ctx context.Context, app, env string, version int) (*Payload, error) {
-	vc, err := c.client(ctx)
+	tokenClient, err := c.client(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -196,9 +196,9 @@ func (c *Client) Read(ctx context.Context, app, env string, version int) (*Paylo
 	if version > 0 {
 		// the SDK treats the path literally — version is QUERY data, and
 		// string-splicing it into the path was a 404 waiting to happen
-		resp, err = vc.Logical().ReadWithData(path, map[string][]string{"version": {fmt.Sprint(version)}})
+		resp, err = tokenClient.Logical().ReadWithData(path, map[string][]string{"version": {fmt.Sprint(version)}})
 	} else {
-		resp, err = vc.Logical().ReadWithContext(ctx, path)
+		resp, err = tokenClient.Logical().ReadWithContext(ctx, path)
 	}
 	if err != nil {
 		return nil, err
@@ -248,11 +248,11 @@ func str(v any) string {
 
 // Meta returns the version list (for the portal's history panel + CAS).
 func (c *Client) Meta(ctx context.Context, app, env string) (*Meta, error) {
-	vc, err := c.client(ctx)
+	tokenClient, err := c.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := vc.Logical().Read(fmt.Sprintf("kv/metadata/%s/%s", app, env))
+	resp, err := tokenClient.Logical().Read(fmt.Sprintf("kv/metadata/%s/%s", app, env))
 	if err != nil {
 		return nil, err
 	}
@@ -284,14 +284,14 @@ func (c *Client) Meta(ctx context.Context, app, env string) (*Meta, error) {
 // WriteCAS refuses unless cas == current version (§9: no unconditional
 // puts — lost updates are not a feature the portal may lose).
 func (c *Client) WriteCAS(ctx context.Context, app, env string, data map[string]string, cas int) (int, error) {
-	vc, err := c.client(ctx)
+	tokenClient, err := c.client(ctx)
 	if err != nil {
 		return 0, err
 	}
 	// cas_required is a property of the mount (set at bootstrap); every
 	// write here carries an explicit cas regardless — a version-0 write
 	// cannot clobber anything (Bao rejects mismatched CAS outright)
-	resp, err := vc.Logical().Write(fmt.Sprintf("kv/data/%s/%s", app, env), map[string]any{
+	resp, err := tokenClient.Logical().Write(fmt.Sprintf("kv/data/%s/%s", app, env), map[string]any{
 		"data": data,
 		"options": map[string]any{
 			"cas": cas,

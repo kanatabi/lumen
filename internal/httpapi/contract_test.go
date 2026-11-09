@@ -48,15 +48,15 @@ func memRouter(tb testing.TB) http.Handler {
 	if err != nil {
 		tb.Fatal(err)
 	}
-	src, err := store.Mem(p)
+	fixtureSource, err := store.Mem(p)
 	if err != nil {
 		tb.Fatal(err)
 	}
-	eng, ok := src.(service.Engine)
+	twinEngine, ok := fixtureSource.(service.Engine)
 	if !ok {
 		tb.Fatal("twin must implement the engine seam")
 	}
-	return httpapi.New(service.New(src, eng), nil, nil).Router() // twin serves both seams, offline
+	return httpapi.New(service.New(fixtureSource, twinEngine), nil, nil).Router() // twin serves both seams, offline
 }
 
 // runContractSuite is THE harness. strictRelevance=true asserts the mock's
@@ -418,8 +418,8 @@ func runContractSuite(t *testing.T, h http.Handler, strictRelevance bool) {
 	})
 	t.Run("featured photo answers with src and alt", func(t *testing.T) {
 		m := mustGet("/api/photos/featured")
-		src, _ := m["src"].(string)
-		if !strings.HasPrefix(src, "https://") || m["alt"] == "" {
+		srcURL, _ := m["src"].(string)
+		if !strings.HasPrefix(srcURL, "https://") || m["alt"] == "" {
 			t.Errorf("featured = %v", m)
 		}
 	})
@@ -475,11 +475,11 @@ func TestContract_Integration_Postgres(t *testing.T) {
 	if err := pool.Ping(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	eng := search.New(mustEnvOr(t, "LUMEN_MEILI_URL"), mustEnvOr(t, "LUMEN_MEILI_KEY"))
-	if err := eng.Ensure(context.Background()); err != nil {
+	searchEngine := search.New(mustEnvOr(t, "LUMEN_MEILI_URL"), mustEnvOr(t, "LUMEN_MEILI_KEY"))
+	if err := searchEngine.Ensure(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	h := httpapi.New(service.New(store.NewPG(pool), eng), eng, nil).Router()
+	h := httpapi.New(service.New(store.NewPG(pool), searchEngine), searchEngine, nil).Router()
 	// engine tier: relevance ordering belongs to Meilisearch (§4)
 	runContractSuite(t, h, false)
 }

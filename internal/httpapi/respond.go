@@ -69,9 +69,9 @@ func qsOptInt(r *http.Request, name string) (*int, error) {
 }
 
 // listQuery decodes the shared §1 facet grammar (both list and search
-// endpoints; withQ marks search's needle).
-func (s *Server) listQuery(r *http.Request, withQ bool) (domain.ListQuery, error) {
-	qy := r.URL.Query()
+// endpoints; includeQuery marks search's needle).
+func (s *Server) listQuery(r *http.Request, includeQuery bool) (domain.ListQuery, error) {
+	query := r.URL.Query()
 	limit, err := qsInt(r, "limit", 0) // absent = unbounded (mock getPosts parity)
 	if err != nil {
 		return domain.ListQuery{}, err
@@ -83,13 +83,13 @@ func (s *Server) listQuery(r *http.Request, withQ bool) (domain.ListQuery, error
 	q := domain.ListQuery{
 		Offset: offset,
 		Limit:  limit,
-		Tags:   qy["tag"], // repeated param = OR set (§1)
-		From:   qy.Get("from"),
-		To:     qy.Get("to"),
-		Sort:   qy.Get("sort"),
+		Tags:   query["tag"], // repeated param = OR set (§1)
+		From:   query.Get("from"),
+		To:     query.Get("to"),
+		Sort:   query.Get("sort"),
 	}
-	if withQ {
-		q.Q = qy.Get("q")
+	if includeQuery {
+		q.Q = query.Get("q")
 	}
 	if rm, err := qsOptInt(r, "readMin"); err != nil {
 		return q, err

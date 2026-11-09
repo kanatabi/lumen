@@ -35,15 +35,15 @@ func (s *Server) mountAdminPosts(a chi.Router) {
 }
 
 func (s *Server) adminListPosts(w http.ResponseWriter, r *http.Request) {
-	qy := r.URL.Query()
-	page, _ := strconv.Atoi(qy.Get("page"))
+	query := r.URL.Query()
+	page, _ := strconv.Atoi(query.Get("page"))
 	total, items, err := s.admin.Pool.ListAdminPosts(r.Context(), store.AdminListOpts{
-		Status: qy.Get("status"),
-		Tags:   qy["tag"],
-		From:   qy.Get("from"),
-		To:     qy.Get("to"),
-		Sort:   qy.Get("sort"),
-		Dir:    qy.Get("dir"),
+		Status: query.Get("status"),
+		Tags:   query["tag"],
+		From:   query.Get("from"),
+		To:     query.Get("to"),
+		Sort:   query.Get("sort"),
+		Dir:    query.Get("dir"),
 		Page:   page,
 	})
 	if err != nil {
@@ -54,7 +54,7 @@ func (s *Server) adminListPosts(w http.ResponseWriter, r *http.Request) {
 		items = []store.AdminPostSummary{}
 	}
 	writeJSON(w, http.StatusOK, envelope[store.AdminPostSummary]{
-		Total: total, Items: items, Page: clampPage(qy.Get("page")), PageSize: 20,
+		Total: total, Items: items, Page: clampPage(query.Get("page")), PageSize: 20,
 	})
 }
 

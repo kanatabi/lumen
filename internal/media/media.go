@@ -47,7 +47,7 @@ func Process(raw []byte) (Processed, error) {
 	if len(raw) == 0 {
 		return Processed{}, fmt.Errorf("empty upload")
 	}
-	cfg, format, err := image.Decode(bytes.NewReader(raw))
+	decoded, format, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
 		return Processed{}, fmt.Errorf("undecodable image: %w", err)
 	}
@@ -56,12 +56,12 @@ func Process(raw []byte) (Processed, error) {
 	switch format {
 	case "jpeg":
 		ext, ctype = "jpg", "image/jpeg"
-		if err := jpeg.Encode(&buf, cfg, &jpeg.Options{Quality: 90}); err != nil {
+		if err := jpeg.Encode(&buf, decoded, &jpeg.Options{Quality: 90}); err != nil {
 			return Processed{}, err
 		}
 	case "png":
 		ext, ctype = "png", "image/png"
-		if err := png.Encode(&buf, cfg); err != nil {
+		if err := png.Encode(&buf, decoded); err != nil {
 			return Processed{}, err
 		}
 	default:
@@ -69,14 +69,14 @@ func Process(raw []byte) (Processed, error) {
 	}
 	sum := sha256.Sum256(buf.Bytes())
 	hexSum := hex.EncodeToString(sum[:])
-	b := cfg.Bounds()
+	bounds := decoded.Bounds()
 	return Processed{
 		Key:         fmt.Sprintf("media/%s/%s.%s", hexSum[:2], hexSum, ext),
 		Data:        buf.Bytes(),
 		SHA256:      hexSum,
 		ContentType: ctype,
-		Width:       b.Dx(),
-		Height:      b.Dy(),
+		Width:       bounds.Dx(),
+		Height:      bounds.Dy(),
 		Ext:         ext,
 	}, nil
 }

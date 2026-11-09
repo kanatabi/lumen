@@ -42,19 +42,19 @@ type ListPage struct {
 const postLimitWhenAbsent = 1000
 
 func (s *Service) ListPosts(ctx context.Context, q domain.ListQuery) (ListPage, error) {
-	sr := &meili.SearchRequest{
+	searchRequest := &meili.SearchRequest{
 		Filter:               postFilter(q),
 		AttributesToRetrieve: []string{"slug"},
 		Offset:               int64(q.Offset),
 		Limit:                int64(q.Limit),
 	}
 	if q.Limit == 0 {
-		sr.Limit = postLimitWhenAbsent
+		searchRequest.Limit = postLimitWhenAbsent
 	}
 	if sort := postSort(q.Sort, q.Q); len(sort) > 0 {
-		sr.Sort = sort
+		searchRequest.Sort = sort
 	}
-	return s.searchPosts(ctx, q.Q, sr)
+	return s.searchPosts(ctx, q.Q, searchRequest)
 }
 
 // SearchPosts is the relevance face: identical machinery to ListPosts —
@@ -64,22 +64,22 @@ func (s *Service) SearchPosts(ctx context.Context, q domain.ListQuery) (ListPage
 }
 
 func (s *Service) SuggestPosts(ctx context.Context, needle string, limit int) (ListPage, error) {
-	sr := &meili.SearchRequest{
+	searchRequest := &meili.SearchRequest{
 		Filter:               `status = published`,
 		Sort:                 []string{"rank:asc"}, // corpus order within matches (twin parity)
 		Limit:                int64(limit),
 		AttributesToRetrieve: []string{"slug"},
 		AttributesToSearchOn: []string{"title", "preview"}, // the launcher's narrower field set (§1)
 	}
-	res, err := s.m.Index(IndexPosts).Search(needle, sr)
+	res, err := s.client.Index(IndexPosts).Search(needle, searchRequest)
 	if err != nil {
 		return ListPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	return ListPage{Slugs: slugsOf(res), Total: res.EstimatedTotalHits}, nil
 }
 
-func (s *Service) searchPosts(ctx context.Context, q string, sr *meili.SearchRequest) (ListPage, error) {
-	res, err := s.m.Index(IndexPosts).Search(q, sr)
+func (s *Service) searchPosts(ctx context.Context, q string, searchRequest *meili.SearchRequest) (ListPage, error) {
+	res, err := s.client.Index(IndexPosts).Search(q, searchRequest)
 	if err != nil {
 		return ListPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -175,7 +175,7 @@ func postSort(sort, q string) []string {
 // ListPhotos serves the gallery (§1: gallery=true ONLY is a filter the
 // public path always carries) in curation order.
 func (s *Service) ListPhotos(ctx context.Context, limit int) (PhotoPage, error) {
-	sr := &meili.SearchRequest{
+	searchRequest := &meili.SearchRequest{
 		Filter:               `gallery = true`,
 		Sort:                 []string{"sort:asc"},
 		Offset:               0,
@@ -183,9 +183,9 @@ func (s *Service) ListPhotos(ctx context.Context, limit int) (PhotoPage, error) 
 		AttributesToRetrieve: []string{"id"},
 	}
 	if limit <= 0 {
-		sr.Limit = postLimitWhenAbsent
+		searchRequest.Limit = postLimitWhenAbsent
 	}
-	res, err := s.m.Index(IndexPhotos).Search("", sr)
+	res, err := s.client.Index(IndexPhotos).Search("", searchRequest)
 	if err != nil {
 		return PhotoPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}

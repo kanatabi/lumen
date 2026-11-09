@@ -34,9 +34,9 @@ func photoID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 }
 
 func (s *Server) adminListPhotos(w http.ResponseWriter, r *http.Request) {
-	qy := r.URL.Query()
+	query := r.URL.Query()
 	var gallery *bool
-	switch qy.Get("gallery") {
+	switch query.Get("gallery") {
 	case "1":
 		t := true
 		gallery = &t
@@ -44,14 +44,14 @@ func (s *Server) adminListPhotos(w http.ResponseWriter, r *http.Request) {
 		f := false
 		gallery = &f
 	}
-	page, _ := strconv.Atoi(qy.Get("page"))
+	page, _ := strconv.Atoi(query.Get("page"))
 	total, items, err := s.admin.Pool.ListAdminPhotos(r.Context(), store.PhotoListOpts{
-		Collections: qy["collection"],
+		Collections: query["collection"],
 		Gallery:     gallery,
-		From:        qy.Get("from"),
-		To:          qy.Get("to"),
-		Sort:        qy.Get("sort"),
-		Dir:         qy.Get("dir"),
+		From:        query.Get("from"),
+		To:          query.Get("to"),
+		Sort:        query.Get("sort"),
+		Dir:         query.Get("dir"),
 		Page:        page,
 	})
 	if err != nil {
@@ -59,7 +59,7 @@ func (s *Server) adminListPhotos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, envelope[store.AdminPhoto]{
-		Total: total, Items: items, Page: clampPage(qy.Get("page")), PageSize: 24,
+		Total: total, Items: items, Page: clampPage(query.Get("page")), PageSize: 24,
 	})
 }
 
@@ -228,7 +228,7 @@ func (s *Server) adminSearch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, out)
 		return
 	}
-	postPage, err := s.engineAdmin.AdminPostsByQuery(r.Context(), domain.ListQuery{Q: q, Limit: 8})
+	postPage, err := s.searchEngine.AdminPostsByQuery(r.Context(), domain.ListQuery{Q: q, Limit: 8})
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -243,7 +243,7 @@ func (s *Server) adminSearch(w http.ResponseWriter, r *http.Request) {
 			out.Posts = append(out.Posts, sum)
 		}
 	}
-	photoPage, err := s.engineAdmin.AdminPhotosByQuery(r.Context(), q, 8)
+	photoPage, err := s.searchEngine.AdminPhotosByQuery(r.Context(), q, 8)
 	if err != nil {
 		s.fail(w, err)
 		return

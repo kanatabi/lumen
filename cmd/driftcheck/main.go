@@ -18,13 +18,13 @@ import (
 )
 
 func main() {
-	bc, err := bao.New()
+	baoClient, err := bao.New()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "driftcheck:", err)
 		os.Exit(2)
 	}
 	ctx := context.Background()
-	paths, err := bc.ListPaths(ctx)
+	paths, err := baoClient.ListPaths(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "driftcheck: plane unreachable:", err)
 		os.Exit(2)
@@ -46,17 +46,17 @@ func main() {
 		if !envs["staging"] || !envs["production"] {
 			continue // an app present on one env only is bootstrap reality, not drift
 		}
-		st, err := bc.Read(ctx, app, "staging", 0)
-		if err != nil || st == nil {
+		stagingDoc, err := baoClient.Read(ctx, app, "staging", 0)
+		if err != nil || stagingDoc == nil {
 			continue
 		}
-		pr, err := bc.Read(ctx, app, "production", 0)
-		if err != nil || pr == nil {
+		prodDoc, err := baoClient.Read(ctx, app, "production", 0)
+		if err != nil || prodDoc == nil {
 			continue
 		}
-		missProd, missStab := diffKeys(st.Data, pr.Data)
+		missProd, missStab := diffKeys(stagingDoc.Data, prodDoc.Data)
 		if len(missProd) == 0 && len(missStab) == 0 {
-			fmt.Printf("%s: key sets aligned (%d)\n", app, len(st.Data))
+			fmt.Printf("%s: key sets aligned (%d)\n", app, len(stagingDoc.Data))
 			continue
 		}
 		drift = true

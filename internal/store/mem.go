@@ -24,7 +24,7 @@ type Fixture struct {
 	Tags    []domain.Tag    `json:"tags"`   // curated cloud
 }
 
-type memSource struct{ f Fixture }
+type memSource struct{ fixture Fixture }
 
 // Mem builds the in-memory Source from the fixture — the offline twin of pg.
 func Mem(path string) (Source, error) {
@@ -40,24 +40,24 @@ func Mem(path string) (Source, error) {
 	for i := range f.Photos {
 		f.Photos[i].ID = int64(i + 1)
 	}
-	return &memSource{f: f}, nil
+	return &memSource{fixture: f}, nil
 }
 
 func (m *memSource) PublishedPosts(_ context.Context) ([]domain.Detail, error) {
-	out := make([]domain.Detail, len(m.f.Posts))
-	copy(out, m.f.Posts) // drafts structurally absent — the leak rule, in-memory form
+	out := make([]domain.Detail, len(m.fixture.Posts))
+	copy(out, m.fixture.Posts) // drafts structurally absent — the leak rule, in-memory form
 	return out, nil
 }
 
 func (m *memSource) Photos(_ context.Context) ([]domain.Photo, error) {
-	out := make([]domain.Photo, len(m.f.Photos))
-	copy(out, m.f.Photos)
+	out := make([]domain.Photo, len(m.fixture.Photos))
+	copy(out, m.fixture.Photos)
 	return out, nil
 }
 
 func (m *memSource) TagCloud(_ context.Context) ([]domain.Tag, error) {
-	out := make([]domain.Tag, len(m.f.Tags))
-	copy(out, m.f.Tags)
+	out := make([]domain.Tag, len(m.fixture.Tags))
+	copy(out, m.fixture.Tags)
 	return out, nil
 }
 
@@ -71,7 +71,7 @@ func (m *memSource) TagCloud(_ context.Context) ([]domain.Tag, error) {
 
 func (m *memSource) ListPosts(_ context.Context, q domain.ListQuery) (search.ListPage, error) {
 	var kept []domain.Summary
-	for _, d := range m.f.Posts { // publication order == curation rank
+	for _, d := range m.fixture.Posts { // publication order == curation rank
 		if domain.Matches(d, q) {
 			kept = append(kept, summary(d))
 		}
@@ -95,7 +95,7 @@ func (m *memSource) SearchPosts(_ context.Context, q domain.ListQuery) (search.L
 		score int
 	}
 	var hits []scored
-	for _, d := range m.f.Posts {
+	for _, d := range m.fixture.Posts {
 		if !domain.Matches(d, q) {
 			continue
 		}
@@ -120,7 +120,7 @@ func (m *memSource) SearchPosts(_ context.Context, q domain.ListQuery) (search.L
 func (m *memSource) SuggestPosts(_ context.Context, needle string, limit int) (search.ListPage, error) {
 	needle = strings.ToLower(needle)
 	var kept []domain.Summary
-	for _, d := range m.f.Posts {
+	for _, d := range m.fixture.Posts {
 		if needle != "" && domain.SuggestMatch(d, needle) {
 			kept = append(kept, summary(d))
 			if len(kept) == limit {
@@ -133,7 +133,7 @@ func (m *memSource) SuggestPosts(_ context.Context, needle string, limit int) (s
 
 func (m *memSource) ListPhotos(_ context.Context, limit int) (search.PhotoPage, error) {
 	var ids []int64
-	for _, p := range m.f.Photos {
+	for _, p := range m.fixture.Photos {
 		if p.Gallery {
 			ids = append(ids, p.ID)
 		}

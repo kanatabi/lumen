@@ -16,19 +16,19 @@ import (
 
 // AdminPostsByQuery: facets + optional relevance, NO status filter.
 func (s *Service) AdminPostsByQuery(ctx context.Context, q domain.ListQuery) (ListPage, error) {
-	sr := &meili.SearchRequest{
+	searchRequest := &meili.SearchRequest{
 		Filter:               adminPostFilter(q),
 		AttributesToRetrieve: []string{"slug"},
 		Offset:               int64(q.Offset),
 		Limit:                int64(q.Limit),
 	}
 	if q.Limit == 0 {
-		sr.Limit = postLimitWhenAbsent
+		searchRequest.Limit = postLimitWhenAbsent
 	}
 	if sort := postSort(q.Sort, q.Q); len(sort) > 0 {
-		sr.Sort = sort
+		searchRequest.Sort = sort
 	}
-	res, err := s.m.Index(IndexPosts).Search(q.Q, sr)
+	res, err := s.client.Index(IndexPosts).Search(q.Q, searchRequest)
 	if err != nil {
 		return ListPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -39,12 +39,12 @@ func (s *Service) AdminPostsByQuery(ctx context.Context, q domain.ListQuery) (Li
 // gallery=false photos may surface, because the admin palette must find
 // everything (§4).
 func (s *Service) AdminPhotosByQuery(ctx context.Context, q string, limit int) (PhotoPage, error) {
-	sr := &meili.SearchRequest{
+	searchRequest := &meili.SearchRequest{
 		AttributesToRetrieve: []string{"id"},
 		Sort:                 []string{"sort:asc"},
 		Limit:                int64(max(limit, 1)),
 	}
-	res, err := s.m.Index(IndexPhotos).Search(q, sr)
+	res, err := s.client.Index(IndexPhotos).Search(q, searchRequest)
 	if err != nil {
 		return PhotoPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}

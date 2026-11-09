@@ -50,16 +50,16 @@ func main() {
 
 	// index everything through the REAL pipeline (engine config from env;
 	// the dev loop must exercise what production runs, not a shortcut)
-	eng := search.New(mustEnv("LUMEN_MEILI_URL"), mustEnv("LUMEN_MEILI_KEY"))
-	if err := eng.Ensure(ctx); err != nil {
+	searchEngine := search.New(mustEnv("LUMEN_MEILI_URL"), mustEnv("LUMEN_MEILI_KEY"))
+	if err := searchEngine.Ensure(ctx); err != nil {
 		log.Fatalf("meili bootstrap: %v", err)
 	}
 	pg := store.NewPG(pool)
-	qc, err := queue.New(ctx, pool, pg, eng)
+	queueClient, err := queue.New(ctx, pool, pg, searchEngine)
 	if err != nil {
 		log.Fatalf("queue: %v", err)
 	}
-	if err := qc.Start(ctx); err != nil {
+	if err := queueClient.Start(ctx); err != nil {
 		log.Fatalf("queue start: %v", err)
 	}
 	ids, err := pg.AllPostIDs(ctx)
@@ -67,7 +67,7 @@ func main() {
 		log.Fatal(err)
 	}
 	for _, id := range ids {
-		if err := qc.EnqueueIndexPost(ctx, id); err != nil {
+		if err := queueClient.EnqueueIndexPost(ctx, id); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -76,16 +76,16 @@ func main() {
 		log.Fatal(err)
 	}
 	for _, id := range pids {
-		if err := qc.EnqueueIndexPhoto(ctx, id); err != nil {
+		if err := queueClient.EnqueueIndexPhoto(ctx, id); err != nil {
 			log.Fatal(err)
 		}
 	}
 	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if err := qc.Drain(dctx); err != nil {
+	if err := queueClient.Drain(dctx); err != nil {
 		log.Fatalf("drain: %v", err)
 	}
-	if err := qc.Stop(ctx); err != nil {
+	if err := queueClient.Stop(ctx); err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("indexed %d posts + %d photos via queue (drained)", len(ids), len(pids))

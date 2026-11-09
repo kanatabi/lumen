@@ -63,7 +63,7 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	tv, err := s.admin.Pool.Authenticate(r.Context(), in.Username, in.Password)
+	tokenVersion, err := s.admin.Pool.Authenticate(r.Context(), in.Username, in.Password)
 	if err != nil {
 		if errors.Is(err, store.ErrWrongPassword) {
 			s.admin.Limiter.Fail(ipKey)
@@ -78,7 +78,7 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	tok, expiresIn, err := session.MintSession(s.admin.JWTSecret, in.Username, tv)
+	sessionToken, expiresIn, err := session.MintSession(s.admin.JWTSecret, in.Username, tokenVersion)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
@@ -90,7 +90,7 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	// consumes expiresIn to size the cookie; the snake_case drift here
 	// survived only because the integration test mirrored the HANDLER,
 	// not the spec. Fixed by the Postman round's contract assert.)
-	writeJSON(w, http.StatusOK, map[string]any{"token": tok, "expiresIn": expiresIn})
+	writeJSON(w, http.StatusOK, map[string]any{"token": sessionToken, "expiresIn": expiresIn})
 }
 
 // adminAuth: signature says WHO (pinned HS256 — session.Parse), truth says
@@ -98,18 +98,18 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 // stateless-scaled at once: no session cache to invalidate.
 func (s *Server) adminAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || tok == "" {
+		bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || bearer == "" {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		claims, err := session.Parse(s.admin.JWTSecret, tok)
+		claims, err := session.Parse(s.admin.JWTSecret, bearer)
 		if err != nil {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		tv, exists, err := s.admin.Pool.TokenVersion(r.Context(), claims.Subject)
-		if err != nil || !exists || tv != claims.TV {
+		tokenVersion, exists, err := s.admin.Pool.TokenVersion(r.Context(), claims.Subject)
+		if err != nil || !exists || tokenVersion != claims.TV {
 			writeErr(w, http.StatusUnauthorized, "unauthorized") // bumped = dead
 			return
 		}
@@ -120,8 +120,8 @@ func (s *Server) adminAuth(next http.Handler) http.Handler {
 // DELETE /admin/session — revocation itself (§8: bump tv; mellon also
 // always clears its own cookie, which is its half of the promise).
 func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
-	tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	claims, err := session.Parse(s.admin.JWTSecret, tok)
+	bearer, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	claims, err := session.Parse(s.admin.JWTSecret, bearer)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "unauthorized")
 		return

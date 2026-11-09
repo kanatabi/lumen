@@ -35,14 +35,14 @@ type Engine interface {
 // Truth is the hydration + point-read seam (store.PG online, store.Mem twin —
 // the existing Source shape remains the hydration contract).
 type Service struct {
-	src store.Source // truth reads: point lookups, hydration, tag cloud
-	eng Engine       // serving queries: lists, facets, relevance
+	truth  store.Source // truth reads: point lookups, hydration, tag cloud
+	engine Engine       // serving queries: lists, facets, relevance
 }
 
-func New(src store.Source, eng Engine) *Service { return &Service{src: src, eng: eng} }
+func New(truth store.Source, engine Engine) *Service { return &Service{truth: truth, engine: engine} }
 
 func (s *Service) listPostSummaries(ctx context.Context, slugs []string) ([]domain.Summary, error) {
-	all, err := s.src.PublishedPosts(ctx)
+	all, err := s.truth.PublishedPosts(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func (s *Service) listPostSummaries(ctx context.Context, slugs []string) ([]doma
 }
 
 func (s *Service) GetPosts(ctx context.Context, q domain.ListQuery) (domain.ListResult, error) {
-	page, err := s.eng.ListPosts(ctx, q)
+	page, err := s.engine.ListPosts(ctx, q)
 	if err != nil {
 		return domain.ListResult{}, err
 	}
@@ -74,7 +74,7 @@ func (s *Service) GetPosts(ctx context.Context, q domain.ListQuery) (domain.List
 // GetPost: a point read — truth direct (the §1 rule is about LISTING; a
 // single slug is a primary lookup, not a search).
 func (s *Service) GetPost(ctx context.Context, slug string) (domain.Detail, error) {
-	all, err := s.src.PublishedPosts(ctx)
+	all, err := s.truth.PublishedPosts(ctx)
 	if err != nil {
 		return domain.Detail{}, err
 	}
@@ -91,7 +91,7 @@ func (s *Service) GetPost(ctx context.Context, slug string) (domain.Detail, erro
 }
 
 func (s *Service) SuggestPosts(ctx context.Context, q string, limit int) (domain.SuggestResult, error) {
-	page, err := s.eng.SuggestPosts(ctx, q, limit)
+	page, err := s.engine.SuggestPosts(ctx, q, limit)
 	if err != nil {
 		return domain.SuggestResult{}, err
 	}
@@ -109,7 +109,7 @@ func (s *Service) SearchPosts(ctx context.Context, q domain.ListQuery) (domain.L
 	if q.Q == "" {
 		return domain.ListResult{Total: 0, Items: []domain.Summary{}}, nil
 	}
-	page, err := s.eng.SearchPosts(ctx, q)
+	page, err := s.engine.SearchPosts(ctx, q)
 	if err != nil {
 		return domain.ListResult{}, err
 	}
@@ -121,11 +121,11 @@ func (s *Service) SearchPosts(ctx context.Context, q domain.ListQuery) (domain.L
 }
 
 func (s *Service) GetPhotos(ctx context.Context, limit int) (domain.PhotoList, error) {
-	page, err := s.eng.ListPhotos(ctx, limit)
+	page, err := s.engine.ListPhotos(ctx, limit)
 	if err != nil {
 		return domain.PhotoList{}, err
 	}
-	all, err := s.src.Photos(ctx)
+	all, err := s.truth.Photos(ctx)
 	if err != nil {
 		return domain.PhotoList{}, err
 	}
@@ -149,7 +149,7 @@ func (s *Service) GetPhotos(ctx context.Context, limit int) (domain.PhotoList, e
 // FeaturedPhoto: curation point read from truth (which photo is featured is
 // a fact, not a search result).
 func (s *Service) FeaturedPhoto(ctx context.Context) (domain.Photo, error) {
-	all, err := s.src.Photos(ctx)
+	all, err := s.truth.Photos(ctx)
 	if err != nil {
 		return domain.Photo{}, err
 	}
@@ -162,7 +162,7 @@ func (s *Service) FeaturedPhoto(ctx context.Context) (domain.Photo, error) {
 }
 
 func (s *Service) ListTags(ctx context.Context) ([]domain.Tag, error) {
-	tags, err := s.src.TagCloud(ctx)
+	tags, err := s.truth.TagCloud(ctx)
 	if err != nil {
 		return nil, err
 	}

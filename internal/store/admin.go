@@ -153,17 +153,17 @@ func (g *PG) ListAdminPosts(ctx context.Context, o AdminListOpts) (int, []AdminP
 	}
 	page := max(o.Page, 1)
 
-	qs := strings.Join(where, " AND ")
+	whereSQL := strings.Join(where, " AND ")
 	var total int
 	if err := g.pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT count(*) FROM posts WHERE %s`, qs), args...).Scan(&total); err != nil {
+		fmt.Sprintf(`SELECT count(*) FROM posts WHERE %s`, whereSQL), args...).Scan(&total); err != nil {
 		return 0, nil, err
 	}
 	totalPages := max(1, (total+pageSize-1)/pageSize)
 	page = min(page, totalPages) // out-of-range clamps (mellon envelope contract)
 	rows, err := g.pool.Query(ctx,
 		fmt.Sprintf(`SELECT %s FROM posts WHERE %s ORDER BY %s %s, slug ASC LIMIT $%d OFFSET $%d`,
-			adminPostCols, qs, sortCol, dir, n+1, n+2),
+			adminPostCols, whereSQL, sortCol, dir, n+1, n+2),
 		append(args, pageSize, (page-1)*pageSize)...)
 	if err != nil {
 		return 0, nil, err
@@ -284,7 +284,7 @@ func linkTagsTx(ctx context.Context, tx pgx.Tx, postID int64, tags []string) err
 // NOTHING is touched — the portal's CAS promise, enforced here. The index
 // job rides the same transaction (river InsertTx — the whole reason river
 // won the queue seat).
-func (g *PG) UpdateAdminPost(ctx context.Context, slug string, in PostDraftInput, rev int, qc indexEnqueuer) (AdminPostDetail, error) {
+func (g *PG) UpdateAdminPost(ctx context.Context, slug string, in PostDraftInput, rev int, enqueuer indexEnqueuer) (AdminPostDetail, error) {
 	var foundID int64
 	var curRev int
 	err := g.pool.QueryRow(ctx,
@@ -300,7 +300,7 @@ func (g *PG) UpdateAdminPost(ctx context.Context, slug string, in PostDraftInput
 		return AdminPostDetail{}, ErrRevConflict
 	}
 	err = pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx,
+		result, err := tx.Exec(ctx,
 			`UPDATE posts SET title=$2, subtitle=$3, preview=$4, content_md=$5, date=$6::date,
 			              thumbnail=$7, rev = rev + 1, updated_at = now()
 			 WHERE id = $1 AND rev = $8`,
@@ -308,7 +308,7 @@ func (g *PG) UpdateAdminPost(ctx context.Context, slug string, in PostDraftInput
 		if err != nil {
 			return err
 		}
-		if tag.RowsAffected() != 1 {
+		if result.RowsAffected() != 1 {
 			return ErrRevConflict // raced between the read and this CAS — refuse
 		}
 		if err := g.replaceTagsTx(ctx, tx, in.Tags); err != nil {
@@ -320,7 +320,7 @@ func (g *PG) UpdateAdminPost(ctx context.Context, slug string, in PostDraftInput
 		if err := linkTagsTx(ctx, tx, foundID, in.Tags); err != nil {
 			return err
 		}
-		return qc.InsertIndexPostTx(ctx, tx, foundID)
+		return enqueuer.InsertIndexPostTx(ctx, tx, foundID)
 	})
 	if err != nil {
 		return AdminPostDetail{}, err
@@ -339,7 +339,7 @@ type indexEnqueuer interface {
 // content_hash for idempotence) + state machine + Postgres row + index job
 // — one transaction, re-publishing unchanged input is a no-op (byte-stable
 // outputs; deterministic caches depend on it).
-func (g *PG) PublishAdminPost(ctx context.Context, slug string, qc indexEnqueuer) (AdminPostDetail, error) {
+func (g *PG) PublishAdminPost(ctx context.Context, slug string, enqueuer indexEnqueuer) (AdminPostDetail, error) {
 	var id int64
 	var status, content, preview string
 	var hash *string
@@ -383,7 +383,7 @@ func (g *PG) PublishAdminPost(ctx context.Context, slug string, qc indexEnqueuer
 		if err := recomputeTagCountsTx(ctx, tx, id); err != nil {
 			return err
 		}
-		return qc.InsertIndexPostTx(ctx, tx, id)
+		return enqueuer.InsertIndexPostTx(ctx, tx, id)
 	})
 	if err != nil {
 		return AdminPostDetail{}, err
@@ -402,7 +402,7 @@ func recomputeTagCountsTx(ctx context.Context, tx pgx.Tx, postID int64) error {
 	return err
 }
 
-func (g *PG) UnpublishAdminPost(ctx context.Context, slug string, qc indexEnqueuer) (AdminPostDetail, error) {
+func (g *PG) UnpublishAdminPost(ctx context.Context, slug string, enqueuer indexEnqueuer) (AdminPostDetail, error) {
 	var id int64
 	var status string
 	err := g.pool.QueryRow(ctx,
@@ -425,7 +425,7 @@ func (g *PG) UnpublishAdminPost(ctx context.Context, slug string, qc indexEnqueu
 		if err := recomputeTagCountsTx(ctx, tx, id); err != nil {
 			return err
 		}
-		return qc.InsertIndexPostTx(ctx, tx, id)
+		return enqueuer.InsertIndexPostTx(ctx, tx, id)
 	})
 	if err != nil {
 		return AdminPostDetail{}, err
@@ -436,7 +436,7 @@ func (g *PG) UnpublishAdminPost(ctx context.Context, slug string, qc indexEnqueu
 // DeleteAdminPost soft-deletes (§8: row hidden, media retained for the GC
 // window). The index worker re-reads truth, finds nothing alive, and deletes
 // the DOC — convergence by construction.
-func (g *PG) DeleteAdminPost(ctx context.Context, slug string, qc indexEnqueuer) error {
+func (g *PG) DeleteAdminPost(ctx context.Context, slug string, enqueuer indexEnqueuer) error {
 	var id int64
 	err := g.pool.QueryRow(ctx,
 		`SELECT id FROM posts WHERE slug = $1 AND deleted_at IS NULL`, slug).Scan(&id)
@@ -454,7 +454,7 @@ func (g *PG) DeleteAdminPost(ctx context.Context, slug string, qc indexEnqueuer)
 		if err := recomputeTagCountsTx(ctx, tx, id); err != nil {
 			return err
 		}
-		return qc.InsertIndexPostTx(ctx, tx, id)
+		return enqueuer.InsertIndexPostTx(ctx, tx, id)
 	})
 }
 
