@@ -599,3 +599,98 @@ func rankOf(harness *adminHarness, slug string) int {
 	}
 	return r
 }
+
+// ---- A6 (tag desk): featured is the desk's manual promotion flag; counts
+// are TOTAL on every state change (zeroing included); rename propagates via
+// the id-keyed FK web; delete refuses while ANY live post references. ----
+func TestTagDesk(t *testing.T) {
+	harness := newAdminHarness(t)
+
+	pubTags := func() string {
+		code, res := harness.do(http.MethodGet, "/api/tags", "", "")
+		if code != http.StatusOK {
+			t.Fatalf("public tags %d: %s", code, res)
+		}
+		return string(res)
+	}
+
+	// create: slugified, unfeatured
+	code, res := harness.admin(http.MethodPost, "/admin/tags", `{"name":"Integration Tag Alpha"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create tag %d: %s", code, res)
+	}
+	if !bytes.Contains(res, []byte(`"name":"integration-tag-alpha"`)) || !bytes.Contains(res, []byte(`"featured":false`)) {
+		t.Fatalf("create shape: %s", res)
+	}
+
+	// feature it by hand — the desk verb
+	code, res = harness.admin(http.MethodPatch, "/admin/tags/integration-tag-alpha", `{"featured":true}`)
+	if code != http.StatusOK || !bytes.Contains(res, []byte(`"featured":true`)) {
+		t.Fatalf("feature %d: %s", code, res)
+	}
+	// A5 rule: featured but ZERO posts does NOT surface in the widget
+	if strings.Contains(pubTags(), "integration-tag-alpha") {
+		t.Fatal("unused featured tag leaked into the public cloud")
+	}
+
+	// publish a post carrying it → the widget now shows it, count live
+	draft := `{"slug":"integration-tagging","title":"Integration Tagging","subtitle":"desk proof","preview":"","date":"2026-11-10","tags":["integration-tag-alpha"],"content":"body","thumbnail":null}`
+	if code, res = harness.admin(http.MethodPost, "/admin/posts", draft); code != http.StatusCreated {
+		t.Fatalf("create post %d: %s", code, res)
+	}
+	defer func() { _, _ = harness.admin(http.MethodDelete, "/admin/posts/integration-tagging", "") }()
+	if code, res = harness.admin(http.MethodPost, "/admin/posts/integration-tagging/publish", ""); code != http.StatusOK {
+		t.Fatalf("publish %d: %s", code, res)
+	}
+	pub := pubTags()
+	if !strings.Contains(pub, "integration-tag-alpha") || !strings.Contains(pub, `"posts":1`) {
+		t.Fatalf("widget missing the used featured tag: %s", pub)
+	}
+
+	// rename → row moves, posts follow via id-keyed FK
+	if code, res = harness.admin(http.MethodPatch, "/admin/tags/integration-tag-alpha", `{"name":"Integration Tag Beta"}`); code != http.StatusOK || !bytes.Contains(res, []byte(`"name":"integration-tag-beta"`)) {
+		t.Fatalf("rename %d: %s", code, res)
+	}
+	if code, res = harness.admin(http.MethodGet, "/admin/posts/integration-tagging", ""); code != http.StatusOK || !strings.Contains(string(res), "integration-tag-beta") {
+		t.Fatalf("rename did not propagate to the post: %s", res)
+	}
+	// collision refuses
+	if code, _ = harness.admin(http.MethodPost, "/admin/tags", `{"name":"integration-tag-keeper"}`); code != http.StatusCreated {
+		t.Fatalf("keeper create %d", code)
+	}
+	defer func() { _, _ = harness.admin(http.MethodDelete, "/admin/tags/integration-tag-keeper", "") }()
+	if code, _ = harness.admin(http.MethodPatch, "/admin/tags/integration-tag-keeper", `{"name":"integration-tag-beta"}`); code != http.StatusConflict {
+		t.Fatalf("dup rename: want 409, got %d", code)
+	}
+	// unknown rows: 404 both verbs
+	if code, _ = harness.admin(http.MethodPatch, "/admin/tags/integration-nothing", `{"featured":true}`); code != http.StatusNotFound {
+		t.Fatalf("patch unknown: want 404, got %d", code)
+	}
+
+	// UNPUBLISH → the count ZEROES (the ghost-count fix) and the widget drops
+	if code, _ = harness.admin(http.MethodPost, "/admin/posts/integration-tagging/unpublish", ""); code != http.StatusOK {
+		t.Fatalf("unpublish %d", code)
+	}
+	if code, res = harness.admin(http.MethodGet, "/admin/tags", ""); code != http.StatusOK || !bytes.Contains(res, []byte(`"name":"integration-tag-beta","posts":0`)) {
+		t.Fatalf("count did not zero on unpublish: %d %s", code, res)
+	}
+	if strings.Contains(pubTags(), "integration-tag-beta") {
+		t.Fatal("zero-count tag still in the widget")
+	}
+
+	// delete guard: the DRAFT still references → 409 naming the count
+	code, res = harness.admin(http.MethodDelete, "/admin/tags/integration-tag-beta", "")
+	if code != http.StatusConflict || !strings.Contains(string(res), "1 posts still reference it") {
+		t.Fatalf("in-use delete: want 409 with count, got %d %s", code, res)
+	}
+	// delete the post (soft) → tag freed → 204 → gone from vocabulary
+	if code, _ = harness.admin(http.MethodDelete, "/admin/posts/integration-tagging", ""); code != http.StatusNoContent && code != http.StatusOK {
+		t.Fatalf("delete post %d", code)
+	}
+	if code, res = harness.admin(http.MethodDelete, "/admin/tags/integration-tag-beta", ""); code != http.StatusNoContent {
+		t.Fatalf("freed delete: want 204, got %d %s", code, res)
+	}
+	if code, _ = harness.admin(http.MethodDelete, "/admin/tags/integration-tag-beta", ""); code != http.StatusNotFound {
+		t.Fatalf("double delete: want 404, got %d", code)
+	}
+}

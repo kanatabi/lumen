@@ -74,11 +74,15 @@ func (g *PG) Photos(ctx context.Context) ([]domain.Photo, error) {
 	return out, rows.Err()
 }
 
-// TagCloud reads the CURATED cloud (flag + count maintained at publish/seed,
-// §1 — never aggregated at read; vocabulary rows exist for FK integrity but
-// do not surface). Ties break by name, the documented tie order.
+// TagCloud reads the curated widget (0005: the flag is `featured`; the desk
+// toggles it by hand — promotion is curation, never arithmetic). The public
+// list shows FEATURED tags WITH at least one live published post: a featured
+// tag at zero is ready, not display-worthy (the widget never shows "0").
+// Counts stay publish-maintained (§1: never aggregated at read for SHAPE —
+// this filters on the maintained column, it does not compute it). Ties break
+// by name, the documented tie order.
 func (g *PG) TagCloud(ctx context.Context) ([]domain.Tag, error) {
-	rows, err := g.pool.Query(ctx, `SELECT name, posts FROM tags WHERE cloud ORDER BY posts DESC, name ASC`)
+	rows, err := g.pool.Query(ctx, `SELECT name, posts FROM tags WHERE featured AND posts > 0 ORDER BY posts DESC, name ASC`)
 	if err != nil {
 		return nil, err
 	}

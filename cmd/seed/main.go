@@ -130,22 +130,24 @@ func loadFixture(ctx context.Context, pool *pgxpool.Pool, file string) error {
 		}
 
 		// tags: two roles, one table. CLOUD tags (from the fixture's curated
-		// list) carry the published count and cloud=true — the only rows
-		// /api/tags serves. Post-tag vocabulary rows exist solely so post_tags
-		// has a target (FK integrity), cloud=false, count 0 until M3 promotes.
+		// list) carry the published count and featured=true — with count > 0
+		// they're the rows /tags serves. Post-tag vocabulary rows exist solely
+		// so post_tags has a target (FK integrity), featured=false until the
+		// TAG DESK (mellon /tags) curates them in — the "until M3 promotes"
+		// ghost, finally replaced by its real mechanism.
 		tagID := map[string]int64{}
-		upsert := func(name string, count int, cloud bool) error {
+		upsert := func(name string, count int, featured bool) error {
 			if id, ok := tagID[name]; ok {
 				_ = id
 				return nil
 			}
 			var id int64
 			err := tx.QueryRow(ctx,
-				`INSERT INTO tags(name, posts, cloud) VALUES ($1,$2,$3)
+				`INSERT INTO tags(name, posts, featured) VALUES ($1,$2,$3)
 				 ON CONFLICT (name) DO UPDATE
 				 SET posts = GREATEST(tags.posts, EXCLUDED.posts),
-				     cloud   = tags.cloud OR EXCLUDED.cloud
-				 RETURNING id`, name, count, cloud).Scan(&id)
+				     featured = tags.featured OR EXCLUDED.featured
+				 RETURNING id`, name, count, featured).Scan(&id)
 			if err != nil {
 				return err
 			}

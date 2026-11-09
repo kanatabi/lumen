@@ -18,6 +18,7 @@ type (
 	PhotoDocRow      = store.PhotoDocRow
 	PhotoRef         = store.PhotoRef
 	TagRowOut        = store.TagRowOut
+	TagPatch         = store.TagPatch
 	CollectionRowOut = store.CollectionRowOut
 )
 
@@ -30,4 +31,7 @@ var (
 	ErrUnknownColl   = store.ErrUnknownColl
 	ErrDupVocab      = store.ErrDupVocab
 	ErrBadName       = store.ErrBadName
+
+	ErrUnknownVocab = store.ErrUnknownVocab
+	ErrTagInUse     = store.ErrTagInUse
 )
