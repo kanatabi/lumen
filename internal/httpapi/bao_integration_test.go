@@ -1,7 +1,8 @@
 package httpapi_test
 
-// bao_integration_test.go — §9 against a REAL KV-v2 + AppRole server
-// (compose's dev vault; production is OpenBao, same wire API). Bootstraps
+// bao_integration_test.go — §9 against the REAL plane: compose runs
+// OpenBao (ghcr-pinned 2.5.3) here too, so this battery executes against
+// the production product, not a stand-in. Bootstraps
 // the exact §5.6 layout — kv mount, policy that sees ONLY kv/*, an approle
 // with no sys rights — then drives the relay: create via cas:0, conflicts
 // as 409, version pins, metadata, and the REDACTION proof: every secret
@@ -32,9 +33,9 @@ func vaultAddr(t *testing.T) string {
 	return addr
 }
 
-// bootstrapVault builds the §5.6-shaped plane once per run and returns
+// bootstrapPlane builds the §5.6-shaped plane once per run and returns
 // (roleID, secretID) for the relay's identity.
-func bootstrapVault(t *testing.T) (string, string) {
+func bootstrapPlane(t *testing.T) (string, string) {
 	t.Helper()
 	addr := vaultAddr(t)
 	root := os.Getenv("LUMEN_BAO_DEV_ROOT")
@@ -77,7 +78,8 @@ path "kv/metadata/*"  { capabilities = ["read", "list"] }
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// start clean: dev vault persists across runs; the relay test owns
+	// start clean: the dev server persists across runs (single container
+	// lifetime); the relay test owns
 	// lumen/dev and probes, so purge its paths (hard-delete all versions)
 	for _, p := range []string{"kv/metadata/lumen/dev", "kv/metadata/probe/test"} {
 		if _, err := vc.Logical().DeleteWithContext(ctx, p); err != nil {
@@ -97,7 +99,7 @@ path "kv/metadata/*"  { capabilities = ["read", "list"] }
 }
 
 func TestBaoRelay(t *testing.T) {
-	roleID, secretID := bootstrapVault(t)
+	roleID, secretID := bootstrapPlane(t)
 	t.Setenv("LUMEN_BAO_ROLE_ID", roleID)
 	t.Setenv("LUMEN_BAO_SECRET_ID", secretID)
 
@@ -175,5 +177,5 @@ func TestBaoRelay(t *testing.T) {
 
 	// NOTE on containment: the RELAY exposes no sys/ path by construction —
 	// there is literally no route that reaches one; the policy side is the
-	// §5.6 bootstrap's job in the real plane (mirrored by this dev vault).
+	// §5.6 bootstrap's job in the real plane (this dev OpenBao mirrors it).
 }

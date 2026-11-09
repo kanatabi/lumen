@@ -35,7 +35,7 @@ run:                   ## serve §1 on :8080 against dev postgres
 test:                  ## offline gate: unit + harness against the in-memory twin
 	go test ./...
 
-test-integration: up   ## EVERY gated suite against real infra: pg + meili + embedded S3 + dev vault
+test-integration: up   ## EVERY gated suite against real infra: pg + meili + embedded S3 + dev OpenBao
 	go run ./cmd/seed
 	LUMEN_INTEGRATION=1 LUMEN_MEDIA=1 LUMEN_BAO_ADDR=http://localhost:8200 go test -count=1 ./...
 	go run ./cmd/seed   ## lifecycles mutate the corpus — restore it for whatever follows

@@ -6,8 +6,9 @@
 // to Bao. No sys/ route exists here by construction, not by convention.
 //
 // The wire API is the KV-v2/AppRole contract OpenBao inherits from its
-// upstream — dev stand-ins and the production OpenBao speak the same four
-// operations (recorded honestly in compose and the journal).
+// upstream; dev compose runs OpenBao ITSELF (ghcr-pinned — dev == prod,
+// not a stand-in), and the hashicorp/vault/api Go client is OpenBao's
+// documented compatibility path, not a vendor concession.
 package bao
 
 import (
