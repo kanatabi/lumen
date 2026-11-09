@@ -369,6 +369,13 @@ explicit** subset of OpenBao KV v2 — per `INFRA_ARCHITECTURE.md` §5.5:
 - Redaction: values never logged (structured logs redact by key); audit is **Bao's own
   audit devices** — lumen logs the *operation*, not the *payload*.
 - The same client runs the CI drift check (§5.5) — one implementation, two consumers.
+- **Dev plane == prod plane:** compose runs OpenBao itself (`ghcr.io/openbao/openbao`,
+  pinned) — the KV-v2/AppRole battery (bootstrap, redaction proofs, CAS conflicts)
+  executes against the production product, not a stand-in. History worth keeping:
+  the first M6 run substituted `hashicorp/vault:1.19` because `docker.openbao.xyz`
+  failed DNS from the dev box — **one unreachable registry is a data point, not a
+  decision**; ghcr serves the real thing. The Go client (`hashicorp/vault/api`)
+  speaks OpenBao's protocol as its documented compatibility contract.
 
 ## 10. Phase
 
