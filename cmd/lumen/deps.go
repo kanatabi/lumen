@@ -36,34 +36,50 @@ func initDependencies(ctx context.Context) (*dependencies, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
+
 	pool, err := store.NewPool(ctx, cfg.DBURL)
 	if err != nil {
 		return nil, fmt.Errorf("db pool: %w", err)
 	}
+
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+
 	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("db ping: %w", err)
 	}
+
 	if cfg.MeiliURL == "" {
 		pool.Close()
 		return nil, fmt.Errorf("LUMEN_MEILI_URL required: Meilisearch is the read path (§4 ruling)")
 	}
-	engine := search.New(cfg.MeiliURL, cfg.MeiliKey)
+
 	bootCtx, bootCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer bootCancel()
+
+	engine := search.New(cfg.MeiliURL, cfg.MeiliKey)
 	if err := engine.Ensure(bootCtx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("meili bootstrap: %w", err)
 	}
-	queueClient, err := queue.New(bootCtx, pool, store.NewPG(pool), engine)
+
+	pg := store.NewPG(pool) // ONE truth wrapper — the queue client and every
+	// role share this exact instance, not parallel constructions
+	queueClient, err := queue.New(bootCtx, pool, pg, engine)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("queue: %w", err)
 	}
+
 	log.Print("deps: postgres + meilisearch + river client ready")
-	return &dependencies{config: cfg, pool: pool, store: store.NewPG(pool), engine: engine, queueClient: queueClient}, nil
+
+	return &dependencies{
+		config:      cfg,
+		pool:        pool,
+		store:       pg,
+		engine:      engine,
+		queueClient: queueClient}, nil
 }
 
 func (d *dependencies) Close() { d.pool.Close() }

@@ -44,6 +44,7 @@ func startConsumers(deps *dependencies) error {
 	if err := deps.queueClient.Start(context.Background()); err != nil {
 		return err
 	}
+
 	log.Print("worker: queue consumer running")
 	return nil
 }
@@ -51,5 +52,6 @@ func startConsumers(deps *dependencies) error {
 func stopConsumers(deps *dependencies) error {
 	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
 	return deps.queueClient.Stop(stopCtx)
 }

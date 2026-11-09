@@ -37,18 +37,23 @@ func runServer() error {
 		return err
 	}
 	defer deps.Close()
+
 	if err := deps.config.ValidateServer(); err != nil {
 		return err
 	}
 	srv := startHTTP(deps)
 
+	// Wait for shutdown signal
 	<-ctx.Done()
 	log.Print("server: shutdown signal — draining")
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("server: shutdown: %v", err)
 	}
+
 	return nil
 }
 
@@ -80,8 +85,9 @@ func buildAdminDeps(deps *dependencies) *httpapi.AdminDeps {
 		JWTSecret: cfg.SessionSecret,
 		Limiter:   throttle.New(0), // per-replica in-memory backoff (documented)
 	}
+
 	if cfg.Media.Bucket != "" {
-		mediaStore, _, err := media.NewS3(context.Background(), media.Config{
+		mediaCfg := media.Config{
 			Endpoint:     cfg.Media.Endpoint,
 			Region:       cfg.Media.Region,
 			Bucket:       cfg.Media.Bucket,
@@ -90,26 +96,34 @@ func buildAdminDeps(deps *dependencies) *httpapi.AdminDeps {
 			SecretKey:    cfg.Media.SecretKey,
 			ForcePath:    cfg.Media.ForcePath,
 			CreateBucket: cfg.Media.CreateBucket,
-		})
+		}
+
+		mediaStore, _, err := media.NewS3(context.Background(), mediaCfg)
 		if err != nil {
 			log.Fatalf("media store: %v", err)
 		}
+
 		adminDeps.Media = mediaStore
-		adminDeps.MediaEndpoint, adminDeps.MediaBucket, adminDeps.MediaCDNBase =
-			cfg.Media.Endpoint, cfg.Media.Bucket, cfg.Media.CDNBase
+		adminDeps.MediaEndpoint = cfg.Media.Endpoint
+		adminDeps.MediaBucket = cfg.Media.Bucket
+		adminDeps.MediaCDNBase = cfg.Media.CDNBase
+
 		log.Printf("media: S3-compatible relay configured (bucket %s, dev create-bucket: %v)", cfg.Media.Bucket, cfg.Media.CreateBucket)
 	} else {
 		log.Print("media: not configured — POST /admin/photos answers 503 honestly (§5)")
 	}
+
 	if bao.Enabled() {
 		baoClient, err := bao.New()
 		if err != nil {
 			log.Fatalf("bao client: %v", err)
 		}
+
 		adminDeps.Bao = baoClient
 		log.Print("secrets plane: configured (§9 relay live)")
 	} else {
 		log.Print("secrets plane: not configured — /admin/bao absent (honest, §9)")
 	}
+
 	return adminDeps
 }
