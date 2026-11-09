@@ -1,0 +1,2138 @@
+{
+  "info": {
+    "name": "lumen — dev API (§1 public · §8 admin · §9 bao)",
+    "description": "Local dev against `make dev` (server on :8080, seeded corpus).\n\nFastest path: variables pre-filled with the dev placeholders (gofar / mellon-dev-password). Run a login request first — it captures {{token}} into the collection; every admin request inherits it (collection-level Bearer auth).\n\nFolders are SELF-CLEANING and rerunnable: demo post soft-deleted, uploaded photo deleted, vocabulary rows persist by design (201-or-409), bao path version-bumps.\n\n§9 folder needs the plane bootstrapped: `make dev-plane` then restart `make dev` (it auto-loads dev-plane.env). Without it the routes honestly do not exist (404).",
+    "_postman_id": "8d3c4f9a-2b17-4e5f-9a10-4d6576746f6f",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "username",
+      "value": "gofar"
+    },
+    {
+      "key": "password",
+      "value": "mellon-dev-password"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "demoRev",
+      "value": "1"
+    },
+    {
+      "key": "photoId",
+      "value": ""
+    },
+    {
+      "key": "casNow",
+      "value": "1"
+    },
+    {
+      "key": "baoVersion",
+      "value": "1"
+    }
+  ],
+  "item": [
+    {
+      "name": "Public §1 (no auth)",
+      "item": [
+        {
+          "name": "healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/healthz",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            },
+            "description": "liveness: process answers."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ]
+          }
+        },
+        {
+          "name": "readyz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/readyz",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "readyz"
+              ]
+            },
+            "description": "readiness: Postgres AND the engine must answer (fixture mode 503s honestly)."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "\"ready\""
+            ]
+          }
+        },
+        {
+          "name": "posts — curation order, absent limit = corpus",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/posts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "posts"
+              ]
+            },
+            "description": "total reflects ALL published; items in rank order (engine-owned, deterministic)."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "shape-of-a-useful-queue"
+            ]
+          }
+        },
+        {
+          "name": "posts — paged",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/posts?limit=2&offset=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "posts"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "2"
+                },
+                {
+                  "key": "offset",
+                  "value": "1"
+                }
+              ]
+            },
+            "description": "offset/limit; total still the FULL filtered count."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ]
+          }
+        },
+        {
+          "name": "posts — tags OR-facet",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/posts?tag=queues&tag=latency",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "posts"
+              ],
+              "query": [
+                {
+                  "key": "tag",
+                  "value": "queues"
+                },
+                {
+                  "key": "tag",
+                  "value": "latency"
+                }
+              ]
+            },
+            "description": "repeated tag= is OR-matched (§1)."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ]
+          }
+        },
+        {
+          "name": "posts — explicit sort",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/posts?sort=oldest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "posts"
+              ],
+              "query": [
+                {
+                  "key": "sort",
+                  "value": "oldest"
+                }
+              ]
+            },
+            "description": "sort=newest|oldest|quickest|longest; unknown sort is a 400, never silent curation."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ]
+          }
+        },
+        {
+          "name": "posts — inclusive date window",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/posts?from=2024-01-01&to=2026-12-31",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "posts"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2024-01-01"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-12-31"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ]
+          }
+        },
+        {
+          "name": "posts — readTime window (minutes)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/posts?readMin=1&readMax=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "posts"
+              ],
+              "query": [
+                {
+                  "key": "readMin",
+                  "value": "1"
+                },
+                {
+                  "key": "readMax",
+                  "value": "20"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ]
+          }
+        },
+        {
+          "name": "post detail",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/posts/shape-of-a-useful-queue",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "posts",
+                "shape-of-a-useful-queue"
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "content",
+              "mermaid"
+            ]
+          }
+        },
+        {
+          "name": "DRAFT never leaks — detail 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/posts/drafts-are-fantasies",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "posts",
+                "drafts-are-fantasies"
+              ]
+            },
+            "description": "THE leak rule: the draft IS in the index (admin door needs it) — hydration + status filter keep it out. This 404 is the doctrine."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              404
+            ],
+            "x-lumen-contains": [
+              "not found"
+            ]
+          }
+        },
+        {
+          "name": "search — relevance (engine-owned)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/search?q=queue",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "queue"
+                }
+              ]
+            },
+            "description": "ranking is Meilisearch's; assertions are rules (found, sane), not exact order."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "shape-of-a-useful-queue"
+            ]
+          }
+        },
+        {
+          "name": "search — facets narrow",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/search?q=observability&tag=logging",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "observability"
+                },
+                {
+                  "key": "tag",
+                  "value": "logging"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ]
+          }
+        },
+        {
+          "name": "suggest — launcher door",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/search/suggest?q=queue",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "search",
+                "suggest"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "queue"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "results"
+            ]
+          }
+        },
+        {
+          "name": "suggest — case-insensitive",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/search/suggest?q=BACKPRESSURE",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "search",
+                "suggest"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "BACKPRESSURE"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "shape-of-a-useful-queue"
+            ]
+          }
+        },
+        {
+          "name": "photos — gallery in curation order",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/photos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "photos"
+              ]
+            },
+            "description": "8 seeded gallery photos; the featured hero is NOT gallery — total proves it."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "src"
+            ]
+          }
+        },
+        {
+          "name": "photos — featured",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/photos/featured",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "photos",
+                "featured"
+              ]
+            },
+            "description": "curation point read from truth."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "src"
+            ]
+          }
+        },
+        {
+          "name": "tags — curated cloud",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/tags",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "tags"
+              ]
+            },
+            "description": "counts are publish-maintained (§1), never aggregated at read."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "name",
+              "posts"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin §8 — posts lifecycle",
+      "item": [
+        {
+          "name": "login (POST /admin/session) → captures {{token}}",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/session",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "session"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"username\": \"{{username}}\", \"password\": \"{{password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "noauth": []
+            },
+            "description": "credentials = argon2id row (cmd/userctl); unknown user and wrong password answer ONE indistinguishable 401. Run this FIRST for every admin folder."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "pm.test(\"expiresIn is the server-decided 12h (mellon AdminApi camelCase)\", () => pm.expect(j.expiresIn).to.eql(12*60*60));",
+                  "pm.collectionVariables.set(\"token\", j.token);"
+                ]
+              }
+            }
+          ],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "token",
+              "expiresIn"
+            ],
+            "x-lumen-capture": {
+              "token": "token"
+            }
+          }
+        },
+        {
+          "name": "admin list — drafts ARE visible here",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts?status=draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "draft"
+                }
+              ]
+            },
+            "description": "the mirror of the leak rule: admin sees everything, envelope {total,items,page,pageSize 20}."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "drafts-are-fantasies"
+            ]
+          }
+        },
+        {
+          "name": "admin list — sorted",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts?sort=title&dir=asc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts"
+              ],
+              "query": [
+                {
+                  "key": "sort",
+                  "value": "title"
+                },
+                {
+                  "key": "dir",
+                  "value": "asc"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ]
+          }
+        },
+        {
+          "name": "create draft",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"slug\": \"postman-demo\", \"title\": \"Postman Demo Post\", \"subtitle\": \"created by the collection\", \"preview\": \"\", \"date\": \"2026-11-09\", \"tags\": [\"postman\"], \"content\": \"First paragraph becomes the preview at publish.\\n\\nA second block for word count.\\n\", \"thumbnail\": null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "pm.test(\"fresh draft: status draft, rev 1\", () => { pm.expect(j.status).to.eql(\"draft\"); pm.expect(j.rev).to.eql(1); });",
+                  "pm.collectionVariables.set(\"demoRev\", j.rev);"
+                ]
+              }
+            }
+          ],
+          "x-lumen": {
+            "x-lumen-expect": [
+              201
+            ],
+            "x-lumen-contains": [
+              "\"rev\":1",
+              "\"status\":\"draft\""
+            ],
+            "x-lumen-capture": {
+              "demoRev": "rev"
+            }
+          }
+        },
+        {
+          "name": "duplicate slug → 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"slug\": \"postman-demo\", \"title\": \"Postman Demo Post\", \"subtitle\": \"created by the collection\", \"preview\": \"\", \"date\": \"2026-11-09\", \"tags\": [\"postman\"], \"content\": \"First paragraph becomes the preview at publish.\\n\\nA second block for word count.\\n\", \"thumbnail\": null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "live-namespace unique index rejects."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              409
+            ],
+            "x-lumen-contains": [
+              "exists"
+            ]
+          }
+        },
+        {
+          "name": "get draft",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts/postman-demo",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts",
+                "postman-demo"
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "content"
+            ]
+          }
+        },
+        {
+          "name": "update with STALE rev → 409 (CAS)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts/postman-demo",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts",
+                "postman-demo"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"draft\": {\"slug\": \"postman-demo\", \"title\": \"Should Not Stick\", \"subtitle\": \"created by the collection\", \"preview\": \"\", \"date\": \"2026-11-09\", \"tags\": [\"postman\"], \"content\": \"First paragraph becomes the preview at publish.\\n\\nA second block for word count.\\n\", \"thumbnail\": null}, \"rev\": 9999}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "optimistic lock: mismatched rev touches NOTHING (RowsAffected-verified — closes the TOCTOU too)."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              409
+            ],
+            "x-lumen-contains": [
+              "rev"
+            ]
+          }
+        },
+        {
+          "name": "update with current rev → rev bumps",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts/postman-demo",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts",
+                "postman-demo"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"draft\": {\"slug\": \"postman-demo\", \"title\": \"Postman Demo Post\", \"subtitle\": \"edited\", \"preview\": \"\", \"date\": \"2026-11-09\", \"tags\": [\"postman\"], \"content\": \"First paragraph becomes the preview at publish.\\n\\nUpdated body for the word count and read time.\\n\", \"thumbnail\": null}, \"rev\": {{demoRev}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "pm.test(\"rev advanced\", () => pm.expect(j.rev).to.be.above(1));",
+                  "pm.collectionVariables.set(\"demoRev\", j.rev);"
+                ]
+              }
+            }
+          ],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "\"rev\":2"
+            ],
+            "x-lumen-capture": {
+              "demoRev": "rev"
+            }
+          }
+        },
+        {
+          "name": "PUBLISH — the §2 transaction",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts/postman-demo/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts",
+                "postman-demo",
+                "publish"
+              ]
+            },
+            "description": "one tx: derivations (preview default = first paragraph, word_count/read_time from FINAL content, rank assign, content_hash) + state machine + the river index job committed INSIDE via InsertTx."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "pm.test(\"publish derivations land\", () => { pm.expect(j.status).to.eql(\"published\"); pm.expect(j.readTime).to.be.above(0); pm.expect(j.preview).to.include(\"First paragraph\"); pm.expect(j.publishedAt).to.not.eql(null); });"
+                ]
+              }
+            }
+          ],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "\"status\":\"published\"",
+              "\"readTime\"",
+              "First paragraph"
+            ]
+          }
+        },
+        {
+          "name": "re-publish SAME bytes → no-op (rank unmoved)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts/postman-demo/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts",
+                "postman-demo",
+                "publish"
+              ]
+            },
+            "description": "content_hash idempotence: byte-identical input must not re-rank — deterministic caches depend on it."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "\"status\":\"published\""
+            ]
+          }
+        },
+        {
+          "name": "unpublish",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts/postman-demo/unpublish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts",
+                "postman-demo",
+                "unpublish"
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "\"unpublished\""
+            ]
+          }
+        },
+        {
+          "name": "ADMIN search door — drafts included",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/search?q=leak",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "leak"
+                }
+              ]
+            },
+            "description": "the palette's finder: engine WITHOUT the status clause; three groups ≤8 (posts/photos/tags). Draft surfacing HERE and nowhere public is the tested feature."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "drafts-are-fantasies"
+            ]
+          }
+        },
+        {
+          "name": "illegal edge: draft→unpublished → 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"slug\": \"postman-illegal\", \"title\": \"Illegal Edge\", \"subtitle\": \"\", \"preview\": \"x\", \"date\": \"2026-11-09\", \"tags\": [], \"content\": \"x\\n\", \"thumbnail\": null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              201
+            ]
+          }
+        },
+        {
+          "name": "   then unpublish it → 409",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts/postman-illegal/unpublish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts",
+                "postman-illegal",
+                "unpublish"
+              ]
+            },
+            "description": "machine: draft→published⇄unpublished. Shipped posts never return to draft."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              409
+            ],
+            "x-lumen-contains": [
+              "transition"
+            ]
+          }
+        },
+        {
+          "name": "cleanup: delete illegal",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts/postman-illegal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts",
+                "postman-illegal"
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ]
+          }
+        },
+        {
+          "name": "SOFT delete demo post",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts/postman-demo",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts",
+                "postman-demo"
+              ]
+            },
+            "description": "row hidden, media GC-windowed; the worker reads truth→ finds the row gone→ deletes the DOC. Convergence as access control."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "\"ok\""
+            ]
+          }
+        },
+        {
+          "name": "RE-create same slug → 201 (delete FREED the slug)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"slug\": \"postman-demo\", \"title\": \"Postman Demo Post\", \"subtitle\": \"created by the collection\", \"preview\": \"\", \"date\": \"2026-11-09\", \"tags\": [\"postman\"], \"content\": \"First paragraph becomes the preview at publish.\\n\\nA second block for word count.\\n\", \"thumbnail\": null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "partial unique (WHERE deleted_at IS NULL) — history keeps its row, the slug returns to the live namespace."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              201
+            ],
+            "x-lumen-capture": {
+              "demoRev": "rev"
+            }
+          }
+        },
+        {
+          "name": "cleanup: delete demo again",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts/postman-demo",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts",
+                "postman-demo"
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ]
+          }
+        }
+      ],
+      "description": "Run folder-order top-to-bottom; it self-cleans (deleted_at rows persist for the GC window by design)."
+    },
+    {
+      "name": "Admin §8 — photos & upload",
+      "item": [
+        {
+          "name": "list (envelope pageSize 24)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/photos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "photos"
+              ]
+            },
+            "description": "collection= accepts repeated values; gallery=1|0; from/to on created_at. NOTE: later requests act on {{photoId}} which ONLY the upload captures — the folder is safe to rerun and never touches seeded rows."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "createdAt"
+            ]
+          }
+        },
+        {
+          "name": "upload multipart (pick postman/sample.png!)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/photos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "photos"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "photo",
+                  "type": "file",
+                  "src": [
+                    "./sample.png"
+                  ],
+                  "contentType": "image/png"
+                }
+              ]
+            },
+            "description": "lumen DECODES (client type-claims are suggestions), REBUILDS (EXIF dies by construction), PUTs S3, commits row+GC-ledger+index job in one tx. Fresh photos: gallery=false, collection=null — surfacing is a deliberate act. In Postman, RE-SELECT postman/sample.png in the Body→file field (paths are machine-local)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "pm.test(\"content-addressed src\", () => { pm.expect(j.src).to.include(\"/media/\"); pm.expect(j.gallery).to.be.false; });",
+                  "pm.collectionVariables.set(\"photoId\", j.id);"
+                ]
+              }
+            }
+          ],
+          "x-lumen": {
+            "x-lumen-expect": [
+              201
+            ],
+            "x-lumen-contains": [
+              "/media/",
+              ".png"
+            ],
+            "x-lumen-capture": {
+              "photoId": "id"
+            }
+          }
+        },
+        {
+          "name": "references of the uploaded photo (delete warn-list)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/photos/{{photoId}}/references",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "photos",
+                "{{photoId}}",
+                "references"
+              ]
+            },
+            "description": "content scan: which posts embed this src — warn with full information, never block. Runs AFTER upload ({{photoId}} is upload-owned)."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ]
+          }
+        },
+        {
+          "name": "get uploaded",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/photos/{{photoId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "photos",
+                "{{photoId}}"
+              ]
+            },
+            "description": "alt arrives filename-derived (\"sample\") — the author edits it; truth stays human."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "sample"
+            ]
+          }
+        },
+        {
+          "name": "patch alt",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/photos/{{photoId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "photos",
+                "{{photoId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"alt\": \"Postman patched alt\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "Postman patched"
+            ]
+          }
+        },
+        {
+          "name": "patch to UNKNOWN collection → 400",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/photos/{{photoId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "photos",
+                "{{photoId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"collection\": \"does-not-exist\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              400
+            ],
+            "x-lumen-contains": [
+              "collection"
+            ]
+          }
+        },
+        {
+          "name": "delete (row gone; object outlives until storage GC)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/photos/{{photoId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "photos",
+                "{{photoId}}"
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "\"ok\""
+            ]
+          }
+        },
+        {
+          "name": "get after delete → 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/photos/{{photoId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "photos",
+                "{{photoId}}"
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              404
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin §8 — vocabulary",
+      "item": [
+        {
+          "name": "create tag (slugified)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/tags",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "tags"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Postman Demo Tag\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "eager creation: the vocabulary exists the moment it is declared, used or not. 409 on reruns is EXPECTED (rows persist — 201/409 both prove the rule)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) pm.test(\"slugified name\", () => pm.expect(pm.response.json().name).to.eql(\"postman-demo-tag\"));"
+                ]
+              }
+            }
+          ],
+          "x-lumen": {
+            "x-lumen-expect": [
+              201,
+              409
+            ]
+          }
+        },
+        {
+          "name": "duplicate tag (different spelling, same slug) → 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/tags",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "tags"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"postman demo tag\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              409
+            ],
+            "x-lumen-contains": [
+              "exists"
+            ]
+          }
+        },
+        {
+          "name": "list tags",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/tags",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "tags"
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "posts"
+            ]
+          }
+        },
+        {
+          "name": "create collection",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/collections",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "collections"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Postman Series\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              201,
+              409
+            ]
+          }
+        },
+        {
+          "name": "duplicate collection → 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/collections",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "collections"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"postman-series\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              409
+            ],
+            "x-lumen-contains": [
+              "exists"
+            ]
+          }
+        },
+        {
+          "name": "list collections",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/collections",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "collections"
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "name"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Revocation & throttle",
+      "item": [
+        {
+          "name": "use token (sanity)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts"
+              ]
+            }
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ]
+          }
+        },
+        {
+          "name": "LOGOUT — DELETE /admin/session bumps token_version",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/session",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "session"
+              ]
+            },
+            "description": "revocation itself: every outstanding JWT carries the old tv → all dead, instantly, across replicas. No session cache to invalidate."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              204
+            ]
+          }
+        },
+        {
+          "name": "REPLAY the just-valid token → 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/posts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "posts"
+              ]
+            },
+            "description": "THE proof the JWT+tv design exists for. {{token}} still holds it — signature valid, truth says no."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the revoked token is dead\", () => pm.expect(pm.response.code).to.eql(401));"
+                ]
+              }
+            }
+          ],
+          "x-lumen": {
+            "x-lumen-expect": [
+              401
+            ],
+            "x-lumen-contains": [
+              "unauthorized"
+            ]
+          }
+        },
+        {
+          "name": "login again (restores {{token}} for later folders)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/session",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "session"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"username\": \"{{username}}\", \"password\": \"{{password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "noauth": []
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json();",
+                  "pm.test(\"expiresIn is the server-decided 12h (mellon AdminApi camelCase)\", () => pm.expect(j.expiresIn).to.eql(12*60*60));",
+                  "pm.collectionVariables.set(\"token\", j.token);"
+                ]
+              }
+            }
+          ],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-capture": {
+              "token": "token"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Secrets plane §9 (needs: make dev-plane + server restart)",
+      "item": [
+        {
+          "name": "paths (names only — never bytes on a list)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/bao/paths",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "bao",
+                "paths"
+              ]
+            },
+            "description": "policy-scoped kv/metadata enumeration. 404 on this folder WITHOUT the plane configured is the honest-absence design (no /admin/bao mount at all)."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "\"lumen\""
+            ]
+          }
+        },
+        {
+          "name": "read current (values ride — the UI masks them)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/bao/lumen/dev",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "bao",
+                "lumen",
+                "dev"
+              ]
+            },
+            "description": "lumen LOGS never see these bytes: the battery asserts op lines exist and values do not."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json(); pm.collectionVariables.set(\"baoVersion\", j.version);"
+                ]
+              }
+            }
+          ],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "SAMPLE_KEY",
+              "sample-value"
+            ],
+            "x-lumen-capture": {
+              "baoVersion": "version"
+            }
+          }
+        },
+        {
+          "name": "read version 1 (pin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/bao/lumen/dev?version=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "bao",
+                "lumen",
+                "dev"
+              ],
+              "query": [
+                {
+                  "key": "version",
+                  "value": "1"
+                }
+              ]
+            },
+            "description": "SDK ReadWithData — splicing ?version= into an api path is a 404 waiting (learned live)."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "SAMPLE_KEY"
+            ]
+          }
+        },
+        {
+          "name": "metadata (?meta — history + CAS handle)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/bao/lumen/dev?meta=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "bao",
+                "lumen",
+                "dev"
+              ],
+              "query": [
+                {
+                  "key": "meta",
+                  "value": ""
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const j = pm.response.json(); pm.collectionVariables.set(\"casNow\", j.currentVersion);"
+                ]
+              }
+            }
+          ],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "currentVersion",
+              "versions"
+            ],
+            "x-lumen-capture": {
+              "casNow": "currentVersion"
+            }
+          }
+        },
+        {
+          "name": "CAS write with cas=0 on an EXISTING path → 409",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/bao/lumen/dev",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "bao",
+                "lumen",
+                "dev"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"data\": {\"STALE\": \"attempt\"}, \"cas\": 0}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "stale cas → conflict, NEVER a silent clobber. The mount itself is cas_required — unconditional puts are refused at the plane too."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              409
+            ],
+            "x-lumen-contains": [
+              "cas"
+            ]
+          }
+        },
+        {
+          "name": "CAS write with fresh cas → new version",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/bao/lumen/dev",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "bao",
+                "lumen",
+                "dev"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"data\": {\"SAMPLE_KEY\": \"sample-value\", \"SECRET_MARKER\": \"s3cr3t-v4lue-MUST-NOT-BE-LOGGED\", \"POSTMAN_TOUCHED\": \"yes\"}, \"cas\": {{casNow}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "{{casNow}} captured by the metadata request — if you run this alone it 409s (correctly): run the folder in order."
+          },
+          "response": [],
+          "x-lumen": {
+            "x-lumen-expect": [
+              200
+            ],
+            "x-lumen-contains": [
+              "\"version\""
+            ]
+          }
+        }
+      ],
+      "description": "Four operations, no sys/ by construction (there is literally no route to one). AppRole identity lives in lumen's env ONLY — mellon never sees it; that is THE §9 promise."
+    }
+  ]
+}

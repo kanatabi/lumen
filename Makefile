@@ -8,28 +8,53 @@ LUMEN_MEDIA_ACCESS_KEY ?= test
 LUMEN_MEDIA_SECRET_KEY ?= test
 LUMEN_MEDIA_FORCE_PATH ?= true
 LUMEN_MEDIA_CREATE_BUCKET ?= true
+# dev signing secret — a throwaway placeholder in the same spirit as the
+# compose creds below it; prod values live in Bao lumen/{env} (§9, and
+# config fail-fasts on an empty one)
+LUMEN_SESSION_JWT_SECRET ?= dev-session-secret-32-bytes-local!
+# dev admin account for the Postman collection / manual testing
+DEV_USER ?= gofar
+DEV_PASSWORD ?= mellon-dev-password
+# make dev-plane writes dev-plane.env (gitignored); sinclude = absent is OK:
+# no LUMEN_BAO_* ⇒ the §9 surface is honestly unmounted (honest absence)
+-include dev-plane.env
 export LUMEN_DB_URL
+export LUMEN_SESSION_JWT_SECRET
+export LUMEN_BAO_ADDR LUMEN_BAO_ROLE_ID LUMEN_BAO_SECRET_ID
 export LUMEN_MEILI_URL
 export LUMEN_MEILI_KEY
 export LUMEN_MEDIA_ENDPOINT LUMEN_MEDIA_REGION LUMEN_MEDIA_BUCKET
 export LUMEN_MEDIA_ACCESS_KEY LUMEN_MEDIA_SECRET_KEY
 export LUMEN_MEDIA_FORCE_PATH LUMEN_MEDIA_CREATE_BUCKET
 
-.PHONY: up down seed run test test-integration contract tidy
+.PHONY: help dev dev-plane up down seed user run test test-integration test-media contract devs3 tidy
 
-up:                    ## start dev postgres + meilisearch
+help:                  ## list targets
+	@grep -hE '^[a-z][a-z-]*:.*## ' Makefile | sed 's/:.*## /  — /'
+
+dev: up user           ## THE one-command loop: infra + seed + dev user + serve :8080 (Ctrl-C stops the server, containers stay)
+	go run ./cmd/seed
+	go run ./cmd/lumen
+
+dev-plane:             ## bootstrap the dev OpenBao §5.6 shape (kv/policy/approle) → writes dev-plane.env; then restart make dev for /admin/bao
+	bash scripts/dev-plane.sh
+
+user:                  ## upsert the dev admin account (idempotent; token_version preserved)
+	LUMEN_PASSWORD=$(DEV_PASSWORD) go run ./cmd/userctl -username $(DEV_USER)
+
+up:                    ## start dev stack: postgres + meilisearch + openbao (bao storage is in-memory dev mode)
 	docker compose -f docker-compose.dev.yml up -d --wait
 
 devs3:                 ## S3-protocol dev server on :4566 (gofakes3, in-memory; leave running)
 	LUMEN_MEDIA_DEV_ADDR=:4566 LUMEN_MEDIA_BUCKET=$(LUMEN_MEDIA_BUCKET) go run ./cmd/devs3
 
-down:                  ## stop dev postgres (data persists in the volume)
+down:                  ## stop the dev stack (pg/meili volumes persist; openbao dev storage does not — rerun make dev-plane after)
 	docker compose -f docker-compose.dev.yml down
 
 seed:                  ## apply migrations + load the contract twin
 	go run ./cmd/seed
 
-run:                   ## serve §1 on :8080 against dev postgres
+run:                   ## serve the API (no infra steps — what `dev` runs at the end)
 	go run ./cmd/lumen
 
 test:                  ## offline gate: unit + harness against the in-memory twin

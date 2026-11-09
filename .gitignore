@@ -14,6 +14,9 @@
 /dist/
 /lumen
 /seed
+# dev-plane AppRole exports (make dev-plane output — throwaway values but
+# still: generated env files stay out of git, doctrine §1)
+/dev-plane.env
 
 # local data
 pgdata/
