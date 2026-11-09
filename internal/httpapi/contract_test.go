@@ -25,6 +25,7 @@ import (
 	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/service"
 	"github.com/kanatabi/lumen/internal/store"
+	"github.com/kanatabi/lumen/internal/testutil"
 )
 
 func mustEnvOr(tb testing.TB, k string) string {
@@ -48,7 +49,7 @@ func memRouter(tb testing.TB) http.Handler {
 	if err != nil {
 		tb.Fatal(err)
 	}
-	fixtureSource, err := store.Mem(p)
+	fixtureSource, err := testutil.Mem(p)
 	if err != nil {
 		tb.Fatal(err)
 	}

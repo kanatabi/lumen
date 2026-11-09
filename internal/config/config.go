@@ -18,9 +18,8 @@ import (
 
 type Config struct {
 	Port          string // default 8080
-	DBURL         string // postgres://… (required unless Fixture)
+	DBURL         string // postgres://… (required — there is no fixture mode)
 	Origin        string // absolute base (feed/D2 later; unused in M1)
-	FixturePath   string // dev escape hatch: in-memory twin instead of Postgres
 	MeiliURL      string // read-serving engine (§4) — required for the real path
 	MeiliKey      string // master key (dev placeholder in compose; Bao in prod)
 	SessionSecret string // HS256 key, 32B, Bao lumen/{env} — admin surface (§8)
@@ -55,7 +54,7 @@ func Load() (Config, error) {
 	// it; vortex manifests will too) — bind BOTH names, LUMEN_-prefixed wins
 	// by convention, plain PORT by reality. Multiple names = ordered fallback.
 	_ = v.BindEnv("port", "LUMEN_PORT", "PORT")
-	for _, key := range []string{"db_url", "origin", "fixture", "config", "meili_url", "meili_key", "session_jwt_secret"} {
+	for _, key := range []string{"db_url", "origin", "config", "meili_url", "meili_key", "session_jwt_secret"} {
 		_ = v.BindEnv(key)
 	}
 	// media_* (LUMEN_MEDIA_*) bind per key; bools default false (prod never
@@ -85,7 +84,6 @@ func Load() (Config, error) {
 		Port:          v.GetString("port"),
 		DBURL:         v.GetString("db_url"),
 		Origin:        v.GetString("origin"),
-		FixturePath:   v.GetString("fixture"),
 		MeiliURL:      v.GetString("meili_url"),
 		MeiliKey:      v.GetString("meili_key"),
 		SessionSecret: v.GetString("session_jwt_secret"),
@@ -100,8 +98,8 @@ func Load() (Config, error) {
 			CreateBucket: v.GetBool("media_create_bucket"),
 		},
 	}
-	if c.DBURL == "" && c.FixturePath == "" {
-		return c, fmt.Errorf("db_url (LUMEN_DB_URL) required (or fixture/LUMEN_FIXTURE for offline dev)")
+	if c.DBURL == "" {
+		return c, fmt.Errorf("db_url (LUMEN_DB_URL) required — fixture mode was retired (2026-11-09 real-by-default ruling); the dev loop is 'cd ../lumen && make dev'")
 	}
 	if c.DBURL != "" && c.SessionSecret == "" {
 		// fail-fast: an admin surface without a signing key is a config bug,

@@ -9,7 +9,6 @@ import (
 func TestDefaultsAndEnv(t *testing.T) {
 	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
 	t.Setenv("LUMEN_SESSION_JWT_SECRET", "test-secret")
-	t.Setenv("LUMEN_FIXTURE", "")
 	t.Setenv("LUMEN_CONFIG", "")
 	t.Setenv("PORT", "")
 	t.Setenv("LUMEN_PORT", "")
@@ -35,7 +34,6 @@ func TestDefaultsAndEnv(t *testing.T) {
 func TestPostgresRequiresSessionSecret(t *testing.T) {
 	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
 	t.Setenv("LUMEN_SESSION_JWT_SECRET", "")
-	t.Setenv("LUMEN_FIXTURE", "")
 	t.Setenv("LUMEN_CONFIG", "")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected fail-fast: Postgres without a signing secret")
@@ -48,7 +46,6 @@ func TestMediaEnvBinds(t *testing.T) {
 	// milestone. This test is the difference between bound and wired.
 	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
 	t.Setenv("LUMEN_SESSION_JWT_SECRET", "s")
-	t.Setenv("LUMEN_FIXTURE", "")
 	t.Setenv("LUMEN_CONFIG", "")
 	t.Setenv("LUMEN_MEDIA_BUCKET", "lumen-media-dev")
 	t.Setenv("LUMEN_MEDIA_ENDPOINT", "http://localhost:4566")
@@ -62,10 +59,9 @@ func TestMediaEnvBinds(t *testing.T) {
 	}
 }
 
-func TestRequiresDBOrFixture(t *testing.T) {
+func TestRequiresDB(t *testing.T) {
 	t.Setenv("LUMEN_DB_URL", "")
 	t.Setenv("LUMEN_SESSION_JWT_SECRET", "")
-	t.Setenv("LUMEN_FIXTURE", "")
 	t.Setenv("LUMEN_CONFIG", "")
 	// also ensure no stray ./env.yaml in the package dir can satisfy it
 	dir := t.TempDir()
@@ -75,7 +71,7 @@ func TestRequiresDBOrFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := Load(); err == nil {
-		t.Fatal("expected failure without db_url or fixture")
+		t.Fatal("expected failure without db_url (fixture mode is retired)")
 	}
 }
 
@@ -87,7 +83,6 @@ func TestFileFillsEnvWins(t *testing.T) {
 	}
 	t.Setenv("LUMEN_CONFIG", file)
 	t.Setenv("LUMEN_DB_URL", "")
-	t.Setenv("LUMEN_FIXTURE", "")
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)

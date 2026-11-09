@@ -1,4 +1,4 @@
-package store
+package testutil
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 
 	"github.com/kanatabi/lumen/internal/domain"
 	"github.com/kanatabi/lumen/internal/search"
+	"github.com/kanatabi/lumen/internal/store"
 )
 
 // Fixture is the shape of testdata/earendil-fixture.json — the contract twin
@@ -24,10 +25,10 @@ type Fixture struct {
 	Tags    []domain.Tag    `json:"tags"`   // curated cloud
 }
 
-type memSource struct{ fixture Fixture }
+type MemSource struct{ fixture Fixture }
 
 // Mem builds the in-memory Source from the fixture — the offline twin of pg.
-func Mem(path string) (Source, error) {
+func Mem(path string) (store.Source, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("fixture: %w", err)
@@ -40,22 +41,22 @@ func Mem(path string) (Source, error) {
 	for i := range f.Photos {
 		f.Photos[i].ID = int64(i + 1)
 	}
-	return &memSource{fixture: f}, nil
+	return &MemSource{fixture: f}, nil
 }
 
-func (m *memSource) PublishedPosts(_ context.Context) ([]domain.Detail, error) {
+func (m *MemSource) PublishedPosts(_ context.Context) ([]domain.Detail, error) {
 	out := make([]domain.Detail, len(m.fixture.Posts))
 	copy(out, m.fixture.Posts) // drafts structurally absent — the leak rule, in-memory form
 	return out, nil
 }
 
-func (m *memSource) Photos(_ context.Context) ([]domain.Photo, error) {
+func (m *MemSource) Photos(_ context.Context) ([]domain.Photo, error) {
 	out := make([]domain.Photo, len(m.fixture.Photos))
 	copy(out, m.fixture.Photos)
 	return out, nil
 }
 
-func (m *memSource) TagCloud(_ context.Context) ([]domain.Tag, error) {
+func (m *MemSource) TagCloud(_ context.Context) ([]domain.Tag, error) {
 	out := make([]domain.Tag, len(m.fixture.Tags))
 	copy(out, m.fixture.Tags)
 	return out, nil
@@ -69,7 +70,7 @@ func (m *memSource) TagCloud(_ context.Context) ([]domain.Tag, error) {
 // tool — the serving-model ruling applies to the real thing, and the real
 // thing is tested against REAL Meilisearch in the engine-tier suite.
 
-func (m *memSource) ListPosts(_ context.Context, q domain.ListQuery) (search.ListPage, error) {
+func (m *MemSource) ListPosts(_ context.Context, q domain.ListQuery) (search.ListPage, error) {
 	var kept []domain.Summary
 	for _, d := range m.fixture.Posts { // publication order == curation rank
 		if domain.Matches(d, q) {
@@ -85,7 +86,7 @@ func (m *memSource) ListPosts(_ context.Context, q domain.ListQuery) (search.Lis
 	return search.ListPage{Slugs: slugsOf(page), Total: int64(total)}, nil
 }
 
-func (m *memSource) SearchPosts(_ context.Context, q domain.ListQuery) (search.ListPage, error) {
+func (m *MemSource) SearchPosts(_ context.Context, q domain.ListQuery) (search.ListPage, error) {
 	needle := strings.ToLower(strings.TrimSpace(q.Q))
 	if needle == "" {
 		return search.ListPage{Total: 0}, nil
@@ -117,7 +118,7 @@ func (m *memSource) SearchPosts(_ context.Context, q domain.ListQuery) (search.L
 	return search.ListPage{Slugs: slugsOf(page), Total: int64(len(sums))}, nil
 }
 
-func (m *memSource) SuggestPosts(_ context.Context, needle string, limit int) (search.ListPage, error) {
+func (m *MemSource) SuggestPosts(_ context.Context, needle string, limit int) (search.ListPage, error) {
 	needle = strings.ToLower(needle)
 	var kept []domain.Summary
 	for _, d := range m.fixture.Posts {
@@ -131,7 +132,7 @@ func (m *memSource) SuggestPosts(_ context.Context, needle string, limit int) (s
 	return search.ListPage{Slugs: slugsOf(kept), Total: int64(len(kept))}, nil
 }
 
-func (m *memSource) ListPhotos(_ context.Context, limit int) (search.PhotoPage, error) {
+func (m *MemSource) ListPhotos(_ context.Context, limit int) (search.PhotoPage, error) {
 	var ids []int64
 	for _, p := range m.fixture.Photos {
 		if p.Gallery {
