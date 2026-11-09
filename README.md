@@ -48,28 +48,37 @@ make dev-plane      # bootstrap the dev OpenBao into the §5.6 shape:
 
 ## Postman collection
 
-[`postman/lumen.postman_collection.json`](postman/lumen.postman_collection.json)
-covers the full surface — 59 requests in 6 ordered folders: health, public §1
-(every facet/sort/window, the draft-leak 404 proof), admin §8 posts lifecycle
-(CAS 409s, publish derivations, idempotent re-publish, soft-delete-frees-the-slug,
-the admin search door seeing drafts), photos + upload relay, vocabulary, the
-revocation proof (logout → replay the same token → 401), and the §9 Bao folder
-(paths / version pin / `?meta` / CAS conflicts).
+[`postman/lumen.postman_collection.json`](postman/lumen.postman_collection.json) is an
+**endpoint catalog**: one request per API endpoint (32, in 10 resource folders), and
+**every scenario case is a saved EXAMPLE on its endpoint** — pick `GET /api/posts/{slug}`
+and its Examples tab shows the 200 detail, the draft-leak 404, and the unknown-slug 404,
+each with the request that produced it **and the real response captured live** from the
+dev binary (2026-11-09; ids/timestamps are dev artifacts, JWTs truncated). Markdown docs
+on every endpoint: auth, parameter tables, status codes with the *why*, doctrine notes.
 
-Import it, run `make dev`, and press Send: variables ship with the dev
-placeholders, and any **login** request captures `{{token}}` into the
-collection — every admin request inherits it (collection-level Bearer auth).
-The folders are self-cleaning and re-runnable; only two deliberate exceptions
-documented in-request: vocabulary rows persist by design (201-or-409 proves
-eager creation), and `postman/sample.png` must be re-picked in the upload's
-file field once (paths are machine-local). The §9 folder needs `make
-dev-plane` first — without it those routes honestly do not exist (404), which
-is itself the design.
+**Environments** (`postman/environments/`): `lumen-dev` (prefilled with the throwaway
+compose placeholders), `lumen-staging`, `lumen-production`. The API has **no public
+ingress, ever** (INFRA §2) — so staging/prod reach is port-forward, and all three
+environments keep `baseUrl = http://localhost:8080`:
 
-Requests carry `x-lumen-*` extensions (Postman ignores unknown keys): the
-executable expectations — status, body substrings, variable captures. A
-throwaway harness walks the collection against the live binary before it is
-ever shipped, so the collection is proven, not presumed.
+```
+kubectl -n <ns> port-forward svc/lumen 8080:8080    # then switch environment, press Send
+```
+
+Staging/prod env files ship with an **empty password by doctrine** — type it at runtime
+and do NOT save the environment; real values live in OpenBao, never in Git.
+
+Working the collection: pick an environment, run `POST /admin/session` once (it captures
+`{{token}}`; every admin request inherits it), then browse. Folder descriptions explain
+how to re-drive the lifecycle from zero (`x-lumen-state: historical` marks examples whose
+meaning is the captured moment — e.g. the revoked-token replay). The §9 folder needs
+`make dev-plane` + a server restart; without the plane those routes honestly 404.
+
+Every read-only example and every default request was **replayed against the live binary
+and matched its stored status** before this file was committed — a collection is a
+contract statement, and unverified statements are the bug class this repo has now been
+burned by twice. `postman/sample.png` is a real 8×8 PNG so the upload endpoint is
+Send-able out of the box (re-pick it once in the file field — paths are machine-local).
 
 ## Commands
 
