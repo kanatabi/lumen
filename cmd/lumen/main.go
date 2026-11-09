@@ -24,13 +24,27 @@ import (
 var buildVersion = "dev"
 
 func main() {
+	if err := newRootCommand().Execute(); err != nil {
+		os.Exit(1)
+	}
+}
+
+// newRootCommand is a function (not main's body) so commands_test.go can
+// assert the FULL verb set — the regression this guards: an unregistered
+// subcommand compiles clean (unused funcs are legal Go) and fails only at
+// the user's terminal. Never again silently.
+func newRootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:     "lumen",
 		Short:   "the blog's REST backend — API server, index worker, and bootstrap verbs",
 		Version: fmt.Sprintf("lumen %s", buildVersion),
 	}
-	root.AddCommand(serverCommand(), workerCommand(), allCommand())
-	if err := root.Execute(); err != nil {
-		os.Exit(1)
-	}
+	root.AddCommand(
+		serverCommand(),
+		workerCommand(),
+		allCommand(),
+		userCommand(),
+		driftcheckCommand(),
+	)
+	return root
 }

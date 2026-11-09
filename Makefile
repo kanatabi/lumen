@@ -39,9 +39,10 @@ dev:                   ## THE one-command loop — reuses whatever already runs 
 	@if curl -sf http://localhost:8080/readyz >/dev/null 2>&1; then \
 		echo "  lumen: already serving :8080 — nothing to do"; \
 	else \
-		$(MAKE) --no-print-directory user seed; \
-		echo "  serving :8080 as role 'all' (server+worker; Ctrl-C stops it; containers and data stay)"; \
-		go run ./cmd/lumen all; \
+		$(MAKE) --no-print-directory user seed && { \
+			echo "  serving :8080 as role 'all' (server+worker; Ctrl-C stops it; containers and data stay)"; \
+			go run ./cmd/lumen all; \
+		}; \
 	fi
 
 dev-plane:             ## bootstrap the dev OpenBao §5.6 shape (kv/policy/approle) → writes dev-plane.env; then restart make dev for /admin/bao
