@@ -29,11 +29,7 @@ func main() {
 		Short:   "the blog's REST backend — API server, index worker, and bootstrap verbs",
 		Version: fmt.Sprintf("lumen %s", buildVersion),
 	}
-	root.AddCommand(roleCommand("all", "serve HTTP AND consume the index queue (the dev loop)", true, true))
-	root.AddCommand(roleCommand("server", "serve HTTP only (§1 + §8 + §9); no queue consumption", true, false))
-	root.AddCommand(roleCommand("worker", "consume the index queue only; no HTTP server", false, true))
-	root.AddCommand(userCommand())
-	root.AddCommand(driftcheckCommand())
+	root.AddCommand(serverCommand(), workerCommand(), allCommand())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
