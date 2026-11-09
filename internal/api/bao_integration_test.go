@@ -59,7 +59,7 @@ func bootstrapPlane(t *testing.T) (string, string) {
 	}
 	policy := `
 path "kv/data/*"      { capabilities = ["read", "list", "create", "update"] }
-path "kv/metadata/*"  { capabilities = ["read", "list"] }
+path "kv/metadata/*"  { capabilities = ["read", "list", "patch"] }
 `
 	if err := vaultAdmin.Sys().PutPolicyWithContext(ctx, "fzr-portal", policy); err != nil {
 		t.Fatal(err)
@@ -178,4 +178,212 @@ func TestBaoRelay(t *testing.T) {
 	// NOTE on containment: the RELAY exposes no sys/ path by construction —
 	// there is literally no route that reaches one; the policy side is the
 	// §5.6 bootstrap's job in the real plane (this dev OpenBao mirrors it).
+}
+
+// ---- A5: the control plane against the REAL engine (PLAN §3) ----
+
+func purgePaths(t *testing.T, paths ...string) {
+	t.Helper()
+	addr := vaultAddr(t)
+	root := os.Getenv("LUMEN_BAO_DEV_ROOT")
+	if root == "" {
+		root = "dev-root-token"
+	}
+	cfg := vault.DefaultConfig()
+	cfg.Address = addr
+	v, err := vault.NewClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.SetToken(root)
+	for _, p := range paths {
+		if _, err := v.Logical().DeleteWithContext(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func readPayload(t *testing.T, harness *adminHarness, app, env string) (map[string]string, int) {
+	t.Helper()
+	code, res := harness.admin(http.MethodGet, "/admin/bao/"+app+"/"+env, "")
+	if code != http.StatusOK {
+		t.Fatalf("read %s/%s: %d %s", app, env, code, res)
+	}
+	var p struct {
+		Data    map[string]string `json:"data"`
+		Version int               `json:"version"`
+	}
+	if err := json.Unmarshal(res, &p); err != nil {
+		t.Fatal(err)
+	}
+	return p.Data, p.Version
+}
+
+func metaOf(t *testing.T, harness *adminHarness, app, env string) (int, *int) {
+	t.Helper()
+	code, res := harness.admin(http.MethodGet, "/admin/bao/"+app+"/"+env+"?meta", "")
+	if code != http.StatusOK {
+		t.Fatalf("meta %s/%s: %d %s", app, env, code, res)
+	}
+	var m struct {
+		CurrentVersion int  `json:"currentVersion"`
+		PinnedVersion  *int `json:"pinnedVersion"`
+	}
+	if err := json.Unmarshal(res, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m.CurrentVersion, m.PinnedVersion
+}
+
+func TestBaoControlPlane(t *testing.T) {
+	roleID, secretID := bootstrapPlane(t)
+	t.Setenv("LUMEN_BAO_ROLE_ID", roleID)
+	t.Setenv("LUMEN_BAO_SECRET_ID", secretID)
+
+	// run-to-run hygiene: the plane persists; own the itest-app prefix
+	purgePaths(t,
+		"kv/metadata/itest-app/dev", "kv/metadata/itest-app/staging",
+		"kv/metadata/itest-app/production", "kv/metadata/itest-app/lab")
+
+	harness := newAdminHarness(t)
+	if !bao.Enabled() {
+		t.Skip("bao not enabled after setenv")
+	}
+	baoClient, err := bao.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness.adminSvc.EnableBao(baoClient)
+	harness.rebuild()
+
+	// ---- onboard: trio arrives, refusals refuse ----
+	code, res := harness.admin(http.MethodPost, "/admin/bao/apps", `{"app":"itest-app"}`)
+	if code != http.StatusOK {
+		t.Fatalf("onboard %d: %s", code, res)
+	}
+	var ob struct {
+		Envs []string `json:"envs"`
+	}
+	_ = json.Unmarshal(res, &ob)
+	if len(ob.Envs) != 3 {
+		t.Fatalf("trio not defaulted: %s", res)
+	}
+	if code, _ := harness.admin(http.MethodPost, "/admin/bao/apps", `{"app":"itest-app"}`); code != http.StatusConflict {
+		t.Fatalf("duplicate onboard: want 409, got %d", code)
+	}
+	for _, bad := range []string{`{"app":"itest_bad"}`, `{"app":"ITest"}`} {
+		if code, _ := harness.admin(http.MethodPost, "/admin/bao/apps", bad); code != http.StatusBadRequest {
+			t.Fatalf("slug %s: want 400, got %d", bad, code)
+		}
+	}
+
+	// Every PUT below CASes against a META READ, not a remembered number:
+	// ANY structural save mirrors to the siblings (bumping THEM), so the
+	// naive "trio v1, I wrote once" script 409'd against the relay's own
+	// correctness — exactly the invariant, proven by its own collision.
+	headCAS := func(env string) int { cv, _ := metaOf(t, harness, "itest-app", env); return cv }
+	write := func(env string, data map[string]string) int {
+		b, _ := json.Marshal(map[string]any{"data": data, "cas": headCAS(env)})
+		code, res := harness.admin(http.MethodPut, "/admin/bao/itest-app/"+env, string(b))
+		if code != http.StatusOK {
+			t.Fatalf("write %s %d: %s", env, code, res)
+		}
+		var wr struct{ Version int }
+		_ = json.Unmarshal(res, &wr)
+		return wr.Version
+	}
+
+	// a distinctive sibling value for the clobber check
+	stagingSeed := "postgres://sibling-MUST-SURVIVE"
+	write("staging", map[string]string{"DB_URL": stagingSeed}) // v2; mirrors DB_URL:"" into dev+production
+
+	// ---- structural write: mirror lands on BOTH siblings ----
+	saved := map[string]string{"DB_URL": "postgres://dev", "NEW": "n"}
+	write("dev", saved)
+	if data, v := readPayload(t, harness, "itest-app", "staging"); v != 3 || data["NEW"] != "" || data["DB_URL"] != stagingSeed {
+		t.Fatalf("mirror lost sibling value/shape: %v v%d", data, v)
+	}
+	if data, v := readPayload(t, harness, "itest-app", "production"); v != 3 || len(data) != 2 || data["DB_URL"] != "" || data["NEW"] != "" {
+		t.Fatalf("production mirror wrong: %v v%d", data, v)
+	}
+
+	// ---- value-only: siblings untouched, NO version bumps ----
+	devV := write("dev", map[string]string{"DB_URL": "postgres://dev2", "NEW": "n"})
+	if cv, _ := metaOf(t, harness, "itest-app", "staging"); cv != 3 {
+		t.Fatalf("value-only edit bumped staging (%d)", cv)
+	}
+	if cv, _ := metaOf(t, harness, "itest-app", "production"); cv != 3 {
+		t.Fatalf("value-only edit bumped production (%d)", cv)
+	}
+
+	// ---- removal propagates ----
+	devV = write("dev", map[string]string{"DB_URL": "postgres://dev2"})
+	for _, env := range []string{"staging", "production"} {
+		data, _ := readPayload(t, harness, "itest-app", env)
+		if _, gone := data["NEW"]; gone {
+			t.Fatalf("%s kept the removed key: %v", env, data)
+		}
+	}
+
+	// ---- add-env: union seed, collisions, typos ----
+	if code, _ := harness.admin(http.MethodPost, "/admin/bao/itest-app/envs", `{"env":"lab"}`); code != http.StatusOK {
+		t.Fatalf("add-env %d", code)
+	}
+	if data, v := readPayload(t, harness, "itest-app", "lab"); v != 1 || len(data) != 1 || data["DB_URL"] != "" {
+		t.Fatalf("lab not seeded to the canonical union: %v", data)
+	}
+	if code, _ := harness.admin(http.MethodPost, "/admin/bao/itest-app/envs", `{"env":"lab"}`); code != http.StatusConflict {
+		t.Fatalf("duplicate env: want 409, got %d", code)
+	}
+	if code, _ := harness.admin(http.MethodPost, "/admin/bao/itest-app/envs", `{"env":"Dev"}`); code != http.StatusBadRequest {
+		t.Fatalf("bad env slug: want 400, got %d", code)
+	}
+	if code, _ := harness.admin(http.MethodPost, "/admin/bao/ghost-app/envs", `{"env":"dev"}`); code != http.StatusNotFound {
+		t.Fatalf("env on unknown app: want 404, got %d", code)
+	}
+
+	// ---- pin = intent (D1): recorded, surfaced, NEVER a routing change ----
+	if code, res := harness.admin(http.MethodPut, "/admin/bao/itest-app/dev/pin", `{"version":2}`); code != http.StatusOK {
+		t.Fatalf("pin %d: %s", code, res)
+	}
+	if _, pin := metaOf(t, harness, "itest-app", "dev"); pin == nil || *pin != 2 {
+		t.Fatalf("pin absent from meta: %v", pin)
+	}
+	if _, v := readPayload(t, harness, "itest-app", "dev"); v != devV {
+		t.Fatalf("D1 violated — read routed to the pin (version %d, head is %d)", v, devV)
+	}
+	if code, _ := harness.admin(http.MethodPut, "/admin/bao/itest-app/dev/pin", `{"version":99}`); code != http.StatusNotFound {
+		t.Fatalf("pin to unknown version: want 404, got %d", code)
+	}
+	if code, _ := harness.admin(http.MethodPut, "/admin/bao/itest-app/dev/pin", `{"version":0}`); code != http.StatusNotFound {
+		t.Fatalf("pin version 0: want 404, got %d", code)
+	}
+	if code, res := harness.admin(http.MethodDelete, "/admin/bao/itest-app/dev/pin", ""); code != http.StatusNoContent {
+		t.Fatalf("unpin %d: %s", code, res)
+	}
+	if _, pin := metaOf(t, harness, "itest-app", "dev"); pin != nil {
+		t.Fatalf("unpin left intent behind: %v", pin)
+	}
+	if code, _ := harness.admin(http.MethodPut, "/admin/bao/ghost-app/dev/pin", `{"version":1}`); code != http.StatusNotFound {
+		t.Fatalf("pin on missing path: want 404, got %d", code)
+	}
+
+	// ---- the namespace listing shows the whole grown tree ----
+	code, res = harness.admin(http.MethodGet, "/admin/bao/paths", "")
+	if code != http.StatusOK {
+		t.Fatalf("paths %d", code)
+	}
+	var paths []bao.Path
+	if err := json.Unmarshal(res, &paths); err != nil {
+		t.Fatal(err)
+	}
+	mine := 0
+	for _, p := range paths {
+		if p.App == "itest-app" {
+			mine++
+		}
+	}
+	if mine != 4 {
+		t.Fatalf("itest-app envs = %d, want 4 (dev/staging/production/lab)", mine)
+	}
 }

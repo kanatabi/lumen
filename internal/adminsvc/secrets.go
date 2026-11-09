@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/kanatabi/lumen/internal/bao"
 )
@@ -226,7 +227,10 @@ func (s *Service) Pin(ctx context.Context, app, env string, version int) error {
 	if version < 1 || !live {
 		return ErrVersionUnknown
 	}
-	return s.bao.PatchMetadataCustom(ctx, app, env, map[string]any{"pinned_version": version})
+	// KV-v2 custom_metadata is a map[string]string — the ENGINE enforces it
+	// (a numeric value answers 500, discovered by the A5 integration leg):
+	// the pin travels as its decimal STRING.
+	return s.bao.PatchMetadataCustom(ctx, app, env, map[string]any{"pinned_version": strconv.Itoa(version)})
 }
 
 // Unpin removes the intent (RFC 7396: null deletes the key — no sentinel

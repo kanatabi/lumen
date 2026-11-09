@@ -2,7 +2,6 @@ package adminsvc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"reflect"
 	"sort"
@@ -89,10 +88,9 @@ func (f *fakeBao) Meta(_ context.Context, app, env string) (*bao.Meta, error) {
 	for i, v := range p.versions {
 		m.Versions = append(m.Versions, bao.VersionInfo{Version: i + 1, Destroyed: v.destroyed})
 	}
-	if n, ok := p.custom["pinned_version"].(json.Number); ok {
-		if i, _ := n.Int64(); i > 0 {
-			pi := int(i)
-			m.PinnedVersion = &pi
+	if s, ok := p.custom["pinned_version"].(string); ok {
+		if i, err := strconv.Atoi(s); err == nil && i > 0 {
+			m.PinnedVersion = &i
 		}
 	}
 	if m.Versions == nil {
@@ -150,7 +148,7 @@ func (f *fakeBao) PatchMetadataCustom(_ context.Context, app, env string, custom
 			delete(p.custom, kk) // RFC 7396
 			continue
 		}
-		p.custom[kk] = json.Number(strconv.Itoa(v.(int)))
+		p.custom[kk] = v // as-is: the real engine would reject non-strings
 	}
 	return nil
 }

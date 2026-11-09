@@ -64,7 +64,8 @@ type Meta struct {
 	CurrentVersion int           `json:"currentVersion"`
 	Versions       []VersionInfo `json:"versions"`
 	// PinnedVersion is operator INTENT (D1), stored in KV-v2
-	// custom_metadata{"pinned_version":N} — it never reroutes reads.
+	// custom_metadata{"pinned_version":"N"} (the engine stores metadata as
+	// strings) — it never reroutes reads.
 	// nil = unpinned; 0 is not a legal version so absence and zero agree.
 	PinnedVersion *int `json:"pinnedVersion"`
 }
@@ -306,7 +307,7 @@ func decodeMeta(d map[string]any) *Meta {
 	return m
 }
 
-// parsePinned reads custom_metadata{"pinned_version":N} defensively: any
+// parsePinned reads custom_metadata{"pinned_version"} defensively: any
 // shape we did not write (foreign tool, absent, null, string) yields nil —
 // a pin is only a pin when it is a positive number.
 func parsePinned(cm any) *int {
@@ -318,7 +319,17 @@ func parsePinned(cm any) *int {
 	if !ok {
 		return nil
 	}
-	if n := int(toNum(v)); n > 0 {
+	// the engine's custom_metadata is map[string]string (the pin arrives as
+	// "2"); numeric shapes (fixtures, other writers) parse too — either way
+	// it is a pin ONLY as a positive integer, never a lie of 0.
+	n := 0
+	switch sv := v.(type) {
+	case string:
+		n, _ = strconv.Atoi(sv)
+	default:
+		n = int(toNum(sv))
+	}
+	if n > 0 {
 		return &n
 	}
 	return nil
@@ -366,12 +377,23 @@ func (c *Client) PatchMetadataCustom(ctx context.Context, app, env string, custo
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(map[string]any{"custom_metadata": custom})
-	if err != nil {
+	// NOT Logical().Patch: the SDK sends application/scim+json and Bao's
+	// KV-v2 metadata PATCH answers 415 — the merge-patch MEDIA TYPE is the
+	// wire contract (RFC 7396 is also why nil DELETES the key). Integration
+	// earned this comment by failing exactly on it.
+	req := tokenClient.NewRequest("PATCH", "/v1/"+fmt.Sprintf("kv/metadata/%s/%s", app, env))
+	if err := req.SetJSONBody(map[string]any{"custom_metadata": custom}); err != nil {
 		return err
 	}
-	if _, err := tokenClient.Logical().PatchRawWithContext(ctx, fmt.Sprintf("kv/metadata/%s/%s", app, env), body); err != nil {
+	req.Headers.Set("Content-Type", "application/merge-patch+json")
+	resp, err := tokenClient.RawRequestWithContext(ctx, req)
+	if err != nil {
 		return classifyErr(err)
+	}
+	// RawRequestWithContext already consumed the body (Response.Close is a
+	// bool field, not a method — a compile-time breadcrumb from the SDK)
+	if resp != nil && resp.Error() != nil {
+		return classifyErr(resp.Error())
 	}
 	return nil
 }
