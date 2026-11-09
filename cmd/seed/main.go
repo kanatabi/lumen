@@ -20,6 +20,7 @@ import (
 	"github.com/kanatabi/lumen/internal/queue"
 	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/store"
+	"github.com/kanatabi/lumen/internal/testutil"
 )
 
 func main() {
@@ -117,7 +118,7 @@ func loadFixture(ctx context.Context, pool *pgxpool.Pool, file string) error {
 	if err != nil {
 		return err
 	}
-	var f store.Fixture
+	var f testutil.Fixture
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return err
 	}

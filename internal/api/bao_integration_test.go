@@ -1,4 +1,4 @@
-package httpapi_test
+package api_test
 
 // bao_integration_test.go — §9 against the REAL plane: compose runs
 // OpenBao (ghcr-pinned 2.5.3) here too, so this battery executes against
@@ -111,7 +111,7 @@ func TestBaoRelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	harness.deps.Bao = baoClient // §9 surface mounts only when the plane is configured
+	harness.adminSvc.EnableBao(baoClient) // §9 surface mounts only when the plane is configured
 	harness.rebuild()
 
 	// ---- create via cas:0 ----

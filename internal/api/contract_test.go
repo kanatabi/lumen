@@ -5,7 +5,7 @@
 // in-memory twin (offline, always) and the Postgres-backed server (integration
 // tag, after seed). If this file and earendil's api.test.ts disagree, whichever
 // moved is the bug — the mirror ritual applies to tests too.
-package httpapi_test
+package api_test
 
 import (
 	"context"
@@ -21,10 +21,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kanatabi/lumen/internal/httpapi"
+	"github.com/kanatabi/lumen/internal/api"
+	"github.com/kanatabi/lumen/internal/api/public"
 	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/service"
 	"github.com/kanatabi/lumen/internal/store"
+	"github.com/kanatabi/lumen/internal/testutil"
 )
 
 func mustEnvOr(tb testing.TB, k string) string {
@@ -48,7 +50,7 @@ func memRouter(tb testing.TB) http.Handler {
 	if err != nil {
 		tb.Fatal(err)
 	}
-	fixtureSource, err := store.Mem(p)
+	fixtureSource, err := testutil.Mem(p)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -56,7 +58,7 @@ func memRouter(tb testing.TB) http.Handler {
 	if !ok {
 		tb.Fatal("twin must implement the engine seam")
 	}
-	return httpapi.New(service.New(fixtureSource, twinEngine), nil, nil).Router() // twin serves both seams, offline
+	return api.NewRouter(public.New(service.New(fixtureSource, twinEngine), nil), nil) // twin serves both seams, offline
 }
 
 // runContractSuite is THE harness. strictRelevance=true asserts the mock's
@@ -479,7 +481,7 @@ func TestContract_Integration_Postgres(t *testing.T) {
 	if err := searchEngine.Ensure(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	h := httpapi.New(service.New(store.NewPG(pool), searchEngine), searchEngine, nil).Router()
+	h := api.NewRouter(public.New(service.New(store.NewPG(pool), searchEngine), searchEngine), nil)
 	// engine tier: relevance ordering belongs to Meilisearch (§4)
 	runContractSuite(t, h, false)
 }
