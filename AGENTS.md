@@ -60,7 +60,16 @@ wiring scaffolding; never mistake it for the design.)
 - **One file per resource for handlers** (`posts.go`, `search.go`, `photos.go`,
   `tags.go`; plumbing in `router.go`/`respond.go`). A package must not
   accrete into a single file.
-- Container image name stays `blog-backend` — CI rewrites only
+- **Names are read more often than written: spell them out** (owner ruling,
+  2026-09 — a reader should never have to decode what a variable is *about*).
+  No abbreviations in fields, params, or meaningful locals: `queueClient` not
+  `qc`, `searchEngine` not `eng`, `tokenVersion` not `tv`. Standing exceptions,
+  because they are language contract rather than habit: HTTP `w`/`r`/`ctx`,
+  consistent single-letter receivers, `i`/`v` loop vars where the element type
+  is named on the same line, and **wire-contract names verbatim** (the `tv`
+  JWT claim is what the contract calls it — code may be clearer than the spec
+  never).
+- Container image name stays `lumen` — CI rewrites only
   the `images:` line via `kustomize edit set image`, and GHCR names are
   lowercase.
 - Every response sets `Cache-Control` per §5 (content JSON short-lived;

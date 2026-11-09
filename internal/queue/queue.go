@@ -61,8 +61,8 @@ type Engine interface {
 
 type indexPostWorker struct {
 	river.WorkerDefaults[IndexPostArgs]
-	store Store
-	eng   Engine
+	store  Store
+	engine Engine
 }
 
 func (w *indexPostWorker) Work(ctx context.Context, job *river.Job[IndexPostArgs]) error {
@@ -71,15 +71,15 @@ func (w *indexPostWorker) Work(ctx context.Context, job *river.Job[IndexPostArgs
 		return err
 	}
 	if !found {
-		return w.eng.DeletePosts(ctx, []int64{job.Args.PostID})
+		return w.engine.DeletePosts(ctx, []int64{job.Args.PostID})
 	}
-	return w.eng.IndexPosts(ctx, []search.PostDoc{doc})
+	return w.engine.IndexPosts(ctx, []search.PostDoc{doc})
 }
 
 type indexPhotoWorker struct {
 	river.WorkerDefaults[IndexPhotoArgs]
-	store Store
-	eng   Engine
+	store  Store
+	engine Engine
 }
 
 func (w *indexPhotoWorker) Work(ctx context.Context, job *river.Job[IndexPhotoArgs]) error {
@@ -88,9 +88,9 @@ func (w *indexPhotoWorker) Work(ctx context.Context, job *river.Job[IndexPhotoAr
 		return err
 	}
 	if !found {
-		return w.eng.DeletePhotos(ctx, []int64{job.Args.PhotoID})
+		return w.engine.DeletePhotos(ctx, []int64{job.Args.PhotoID})
 	}
-	return w.eng.IndexPhotos(ctx, []search.PhotoDoc{doc})
+	return w.engine.IndexPhotos(ctx, []search.PhotoDoc{doc})
 }
 
 // ---- client ----
@@ -104,8 +104,8 @@ type Client struct {
 // one DB, one truth, jobs included.
 func New(ctx context.Context, pool *pgxpool.Pool, store Store, eng Engine) (*Client, error) {
 	workers := river.NewWorkers()
-	river.AddWorker(workers, &indexPostWorker{store: store, eng: eng})
-	river.AddWorker(workers, &indexPhotoWorker{store: store, eng: eng})
+	river.AddWorker(workers, &indexPostWorker{store: store, engine: eng})
+	river.AddWorker(workers, &indexPhotoWorker{store: store, engine: eng})
 
 	driver := riverpgxv5.New(pool)
 	rc, err := river.NewClient(driver, &river.Config{
