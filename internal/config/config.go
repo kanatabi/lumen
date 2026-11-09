@@ -101,10 +101,16 @@ func Load() (Config, error) {
 	if c.DBURL == "" {
 		return c, fmt.Errorf("db_url (LUMEN_DB_URL) required — fixture mode was retired (2026-11-09 real-by-default ruling); the dev loop is 'cd ../lumen && make dev'")
 	}
-	if c.DBURL != "" && c.SessionSecret == "" {
-		// fail-fast: an admin surface without a signing key is a config bug,
-		// not a feature to discover at first login
-		return c, fmt.Errorf("session_jwt_secret (LUMEN_SESSION_JWT_SECRET) required with Postgres")
-	}
 	return c, nil
+}
+
+// ValidateServer is the HTTP-role-only requirement check (the CLI split,
+// 2026-11-09): `worker` mints no sessions, so it must not need the signing
+// key — while a SERVER without it is a config bug caught at start-up, never
+// a 500 discovered at first login.
+func (c Config) ValidateServer() error {
+	if c.SessionSecret == "" {
+		return fmt.Errorf("session_jwt_secret (LUMEN_SESSION_JWT_SECRET) required to serve HTTP")
+	}
+	return nil
 }

@@ -27,20 +27,28 @@ export LUMEN_MEDIA_ENDPOINT LUMEN_MEDIA_REGION LUMEN_MEDIA_BUCKET
 export LUMEN_MEDIA_ACCESS_KEY LUMEN_MEDIA_SECRET_KEY
 export LUMEN_MEDIA_FORCE_PATH LUMEN_MEDIA_CREATE_BUCKET
 
-.PHONY: help dev dev-plane up down seed user run test test-integration test-media contract devs3 tidy
+.PHONY: help dev dev-plane up down seed user run worker server test test-integration test-media contract devs3 tidy
 
 help:                  ## list targets
 	@grep -hE '^[a-z][a-z-]*:.*## ' Makefile | sed 's/:.*## /  — /'
 
 dev:                   ## THE one-command loop — reuses whatever already runs (containers, data, server); creates only what's missing
-	@docker compose -f docker-compose.dev.yml ps --status running --services 2>/dev/null | grep -qx pg 		&& echo "  containers: reusing what's up (compose up is a no-op for matching containers)" 		|| docker compose -f docker-compose.dev.yml up -d --wait
-	@if curl -sf http://localhost:8080/readyz >/dev/null 2>&1; then 		echo "  lumen: already serving :8080 — nothing to do (its Makefile siblings start what's missing)"; 	else 		$(MAKE) --no-print-directory user seed; 		echo "  serving :8080 (Ctrl-C stops the server; containers and data stay)"; 		go run ./cmd/lumen; 	fi
+	@docker compose -f docker-compose.dev.yml ps --status running --services 2>/dev/null | grep -qx pg \
+		&& echo "  containers: reusing what's up (compose up is a no-op for matching containers)" \
+		|| docker compose -f docker-compose.dev.yml up -d --wait
+	@if curl -sf http://localhost:8080/readyz >/dev/null 2>&1; then \
+		echo "  lumen: already serving :8080 — nothing to do"; \
+	else \
+		$(MAKE) --no-print-directory user seed; \
+		echo "  serving :8080 as role 'all' (server+worker; Ctrl-C stops it; containers and data stay)"; \
+		go run ./cmd/lumen all; \
+	fi
 
 dev-plane:             ## bootstrap the dev OpenBao §5.6 shape (kv/policy/approle) → writes dev-plane.env; then restart make dev for /admin/bao
 	bash scripts/dev-plane.sh
 
 user:                  ## upsert the dev admin account (idempotent; token_version preserved)
-	LUMEN_PASSWORD=$(DEV_PASSWORD) go run ./cmd/userctl -username $(DEV_USER)
+	LUMEN_PASSWORD=$(DEV_PASSWORD) go run ./cmd/lumen user --username $(DEV_USER)
 
 seed:                  ## migrations + engine reconcile; reloads the fixture ONLY on an empty DB (FORCE=1 to reset)
 
@@ -56,8 +64,14 @@ down:                  ## stop the dev stack (pg/meili volumes persist; openbao 
 seed:                  ## apply migrations + load the contract twin
 	go run ./cmd/seed
 
-run:                   ## serve the API (no infra steps — what `dev` runs at the end)
-	go run ./cmd/lumen
+run:                   ## serve role 'all' (no infra steps — what `dev` runs at the end)
+	go run ./cmd/lumen all
+
+worker:                ## consume the index queue only (the prod-split worker process)
+	go run ./cmd/lumen worker
+
+server:                ## serve HTTP only, no queue consumption (the prod-split API process)
+	go run ./cmd/lumen server
 
 test:                  ## offline gate: unit + harness against the in-memory twin
 	go test ./...

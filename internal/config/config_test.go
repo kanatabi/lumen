@@ -31,12 +31,21 @@ func TestDefaultsAndEnv(t *testing.T) {
 	}
 }
 
-func TestPostgresRequiresSessionSecret(t *testing.T) {
+func TestServerRoleRequiresSessionSecret(t *testing.T) {
 	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
 	t.Setenv("LUMEN_SESSION_JWT_SECRET", "")
 	t.Setenv("LUMEN_CONFIG", "")
-	if _, err := Load(); err == nil {
-		t.Fatal("expected fail-fast: Postgres without a signing secret")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load itself must not need the secret (worker role boots without it): %v", err)
+	}
+	if err := c.ValidateServer(); err == nil {
+		t.Fatal("expected fail-fast: HTTP role without a signing secret")
+	}
+	t.Setenv("LUMEN_SESSION_JWT_SECRET", "s")
+	c, _ = Load()
+	if err := c.ValidateServer(); err != nil {
+		t.Fatalf("with secret present ValidateServer must pass: %v", err)
 	}
 }
 

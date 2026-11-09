@@ -22,4 +22,7 @@ ENV PORT=8080
 EXPOSE 8080
 # no service account baked here; the cluster decides user via securityContext
 # (vortex doctrine), and the DB/engine/Bao endpoints arrive as ESO-rendered env
+# Role as argument: `all` until the cluster runs a dedicated worker
+# deployment (vortex phase flips the API to `server` + adds a `worker`).
 ENTRYPOINT ["/usr/local/bin/lumen"]
+CMD ["all"]

@@ -21,7 +21,7 @@ That one line brings up the whole loop (`-d` details in `make help`):
 | Meilisearch | pinned `v1.56.1` on `:7700`, key `dev-meili-key` — **the read path** (lists & search answer here) | compose, volume persists |
 | OpenBao | pinned `ghcr.io/openbao/openbao:2.5.3` on `:8200`, dev mode (root `dev-root-token`) — **the same product production runs** | compose, storage in-memory |
 | Migrations + corpus | `cmd/seed`: schema + queue tables + fixture, then indexes everything **through the real river queue** (drained before exit) | `internal/store/migrations/` |
-| Admin account | upserts `gofar` / `mellon-dev-password` via `cmd/userctl` (argon2id in DB; password never leaves env) | `users.passhash` |
+| Admin account | upserts `gofar` / `mellon-dev-password` via `lumen user` (argon2id in DB; password never leaves env) | `users.passhash` |
 | The server | `go run ./cmd/lumen` on `:8080` | — |
 
 Every dev credential above is a throwaway placeholder in Git **on purpose** —
