@@ -7,8 +7,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/kanatabi/lumen/internal/adminsvc"
 	"github.com/kanatabi/lumen/internal/httpx"
-	"github.com/kanatabi/lumen/internal/store"
 )
 
 const postsPageSize = 20
@@ -25,7 +25,7 @@ func (h *Handler) mountPosts(a chi.Router) {
 
 func (h *Handler) listPosts(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	total, items, err := h.svc.ListPosts(r.Context(), store.AdminListOpts{
+	total, items, err := h.svc.ListPosts(r.Context(), adminsvc.AdminListOpts{
 		Status: query.Get("status"),
 		Tags:   query["tag"],
 		From:   query.Get("from"),
@@ -39,15 +39,15 @@ func (h *Handler) listPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if items == nil {
-		items = []store.AdminPostSummary{}
+		items = []adminsvc.AdminPostSummary{}
 	}
-	httpx.WriteJSON(w, http.StatusOK, envelope[store.AdminPostSummary]{
+	httpx.WriteJSON(w, http.StatusOK, envelope[adminsvc.AdminPostSummary]{
 		Total: total, Items: items, Page: clampPage(query.Get("page")), PageSize: postsPageSize,
 	})
 }
 
 func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
-	var in store.PostDraftInput
+	var in adminsvc.PostDraftInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		httpx.WriteErr(w, http.StatusBadRequest, "json draft required")
 		return
@@ -56,7 +56,7 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 		httpx.WriteJSON(w, http.StatusCreated, detail)
-	case errors.Is(err, store.ErrSlugTaken):
+	case errors.Is(err, adminsvc.ErrSlugTaken):
 		httpx.WriteErr(w, http.StatusConflict, err.Error())
 	default:
 		httpx.Fail(w, r, err)
@@ -74,8 +74,8 @@ func (h *Handler) getPost(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) updatePost(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Draft store.PostDraftInput `json:"draft"`
-		Rev   int                  `json:"rev"`
+		Draft adminsvc.PostDraftInput `json:"draft"`
+		Rev   int                     `json:"rev"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httpx.WriteErr(w, http.StatusBadRequest, "expected {draft, rev}")
@@ -85,9 +85,9 @@ func (h *Handler) updatePost(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 		httpx.WriteJSON(w, http.StatusOK, detail)
-	case errors.Is(err, store.ErrRevConflict):
+	case errors.Is(err, adminsvc.ErrRevConflict):
 		httpx.WriteErr(w, http.StatusConflict, err.Error())
-	case errors.Is(err, store.ErrNoPosts):
+	case errors.Is(err, adminsvc.ErrNoPosts):
 		httpx.WriteErr(w, http.StatusNotFound, "not found")
 	default:
 		httpx.Fail(w, r, err)
@@ -104,14 +104,14 @@ func (h *Handler) unpublishPost(w http.ResponseWriter, r *http.Request) {
 	h.stateMachineOr(w, r, err, detail)
 }
 
-func (h *Handler) stateMachineOr(w http.ResponseWriter, r *http.Request, err error, detail store.AdminPostDetail) {
+func (h *Handler) stateMachineOr(w http.ResponseWriter, r *http.Request, err error, detail adminsvc.AdminPostDetail) {
 	switch {
 	case err == nil:
 		httpx.WriteJSON(w, http.StatusOK, detail)
-	case errors.Is(err, store.ErrBadTransition):
+	case errors.Is(err, adminsvc.ErrBadTransition):
 		// the §4 machine: draft→published⇄unpublished, never back to draft
 		httpx.WriteErr(w, http.StatusConflict, err.Error())
-	case errors.Is(err, store.ErrNoPosts):
+	case errors.Is(err, adminsvc.ErrNoPosts):
 		httpx.WriteErr(w, http.StatusNotFound, "not found")
 	default:
 		httpx.Fail(w, r, err)

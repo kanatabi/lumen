@@ -7,8 +7,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/kanatabi/lumen/internal/adminsvc"
 	"github.com/kanatabi/lumen/internal/httpx"
-	"github.com/kanatabi/lumen/internal/store"
 )
 
 func (h *Handler) mountVocab(a chi.Router) {
@@ -37,9 +37,9 @@ func (h *Handler) createTag(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 		httpx.WriteJSON(w, http.StatusCreated, tag)
-	case errors.Is(err, store.ErrDupVocab):
+	case errors.Is(err, adminsvc.ErrDupVocab):
 		httpx.WriteErr(w, http.StatusConflict, err.Error())
-	case errors.Is(err, store.ErrBadName):
+	case errors.Is(err, adminsvc.ErrBadName):
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error())
 	default:
 		httpx.Fail(w, r, err)
@@ -65,9 +65,9 @@ func (h *Handler) createCollection(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 		httpx.WriteJSON(w, http.StatusCreated, collection)
-	case errors.Is(err, store.ErrDupVocab):
+	case errors.Is(err, adminsvc.ErrDupVocab):
 		httpx.WriteErr(w, http.StatusConflict, err.Error())
-	case errors.Is(err, store.ErrBadName):
+	case errors.Is(err, adminsvc.ErrBadName):
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error())
 	default:
 		httpx.Fail(w, r, err)

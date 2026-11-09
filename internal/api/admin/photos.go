@@ -8,8 +8,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/kanatabi/lumen/internal/adminsvc"
 	"github.com/kanatabi/lumen/internal/httpx"
-	"github.com/kanatabi/lumen/internal/store"
 )
 
 const photosPageSize = 24
@@ -44,7 +44,7 @@ func (h *Handler) listPhotos(w http.ResponseWriter, r *http.Request) {
 		gallery = &no
 	}
 	page := clampPage(query.Get("page"))
-	total, items, err := h.svc.ListPhotos(r.Context(), store.PhotoListOpts{
+	total, items, err := h.svc.ListPhotos(r.Context(), adminsvc.PhotoListOpts{
 		Collections: query["collection"],
 		Gallery:     gallery,
 		From:        query.Get("from"),
@@ -57,7 +57,7 @@ func (h *Handler) listPhotos(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, envelope[store.AdminPhoto]{
+	httpx.WriteJSON(w, http.StatusOK, envelope[adminsvc.AdminPhoto]{
 		Total: total, Items: items, Page: page, PageSize: photosPageSize,
 	})
 }
@@ -102,15 +102,15 @@ func (h *Handler) patchPhoto(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, http.StatusBadRequest, "json patch required")
 		return
 	}
-	row, err := h.svc.PatchPhoto(r.Context(), id, store.PhotoPatch{
+	row, err := h.svc.PatchPhoto(r.Context(), id, adminsvc.PhotoPatch{
 		Alt: body.Alt, Collection: body.Collection, Gallery: body.Gallery,
 	})
 	switch {
 	case err == nil:
 		httpx.WriteJSON(w, http.StatusOK, row.Admin())
-	case errors.Is(err, store.ErrNoPhoto):
+	case errors.Is(err, adminsvc.ErrNoPhoto):
 		httpx.WriteErr(w, http.StatusNotFound, "not found")
-	case errors.Is(err, store.ErrUnknownColl):
+	case errors.Is(err, adminsvc.ErrUnknownColl):
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error())
 	default:
 		httpx.Fail(w, r, err)
