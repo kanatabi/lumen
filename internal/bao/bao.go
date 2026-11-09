@@ -1,6 +1,9 @@
 // Package bao is the secrets-plane relay (lumen §9): a MINIMAL, explicit
-// surface over the KV v2 API — list metadata (policy-scoped), read (+
-// version pin), version list, CAS write. The fzr-portal AppRole lives in
+// surface over the KV v2 API — list metadata, read (+version), version list,
+// CAS write, create-if-absent (onboarding), metadata PATCH (the pin). The
+// surface grew only where PLAN-SECRETS-CONTROL demanded a decision lumen
+// must OWN (invariant fan-out, intent pins) — never a raw Bao proxy.
+// The fzr-portal AppRole lives in
 // lumen's env (rendered by ESO from the §5.6 seed); the portal UI NEVER
 // sees these credentials — it authenticates to LUMEN, lumen authenticates
 // to Bao. No sys/ route exists here by construction, not by convention.
@@ -146,7 +149,7 @@ func (c *Client) client(ctx context.Context) (*api.Client, error) {
 	return clone, nil
 }
 
-// ---- the four operations (§9) — nothing else is exposed ----
+// ---- the §9 surface — nothing outside these operations is exposed ----
 
 // ListPaths enumerates the policy-scoped mounts/paths: kv/metadata/<app>/
 // → apps; each app's children are envs. Names only — the metadata LIST is
