@@ -200,11 +200,15 @@ the relay-upload ingestion path instead of direct browser→bucket credentials.
   superseded — the Bao seed now holds only the JWT signing key) */, token_version
   /* bumped by logout; every JWT carries `tv` and must match */)` — one row today,
   the shape stays multi-user-honest without RBAC being real (Parked in mellon PLAN)
-- `tags(id, name u, posts, cloud)`, `post_tags(post_id, tag_id, position)`
-  — counts publish-maintained (§1, never aggregated at read); `cloud` is curated
-  MEMBERSHIP distinct from FK vocabulary (the earendil cloud ships a curated
-  subset — vocabulary rows exist so links can point somewhere; only cloud=true
-  rows serve `/api/tags`); `position` preserves author-declared tag ORDER — the
+- `tags(id, name u, posts, featured)`, `post_tags(post_id, tag_id, position)`
+  — counts publish-maintained AND TOTAL (0005 era: the recompute rewrites EVERY
+  row's count, so a tag whose last published post died reads 0, not a ghost);
+  `featured` (was `cloud` until migration 0005 — the name kept colliding with
+  "the infrastructure cloud"; `featured` now matches photos' flag of the same
+  purpose) is curated MEMBERSHIP distinct from FK vocabulary, promoted ONLY by
+  the mellon tag desk (PATCH featured) — no arithmetic auto-promotes; the public
+  `/api/tags` widget serves `featured AND posts > 0` (a featured tag at zero is
+  ready, not display-worthy); `position` preserves author-declared tag ORDER — the
   first live diff against the mock proved tag order is payload, not alphabet
 - `photos(id, src, alt, width, height, sort, featured bool, gallery bool, collection)`
   — `featured` answers `GET /api/photos/featured`; **`gallery` is the public
@@ -318,7 +322,16 @@ GET    /admin/collections                  → curation vocabulary (name + photo
 POST   /admin/collections                  → create a collection; name slugified,
                                              409 on duplicates (same semantics as tags)
 GET    /admin/tags                         → vocabulary (every created tag, used
-                                             or not; counts = published posts)
+                                             or not; counts = published posts;
+                                             rows carry `featured`)
+PATCH  /admin/tags/{name}                  → {name?, featured?}: rename propagates
+                                             to every referencing post (id-keyed
+                                             FKs — free), collisions 409; featured
+                                             is the desk's manual widget promotion
+DELETE /admin/tags/{name}                  → refuses 409 while ANY live (non-
+                                             soft-deleted) post references it —
+                                             the message NAMES the count; 204
+                                             when free, 404 unknown
 POST   /admin/tags                         → create a vocabulary entry; name is
                                              slugified, 409 on duplicates — the
                                              portal creates eagerly, saves never
