@@ -3,7 +3,7 @@
 	"posts": [
 		{
 			"slug": "observability-is-a-contract",
-			"title": "Observability is a contract, not a dashboard",
+			"title": "Observability is a contract, not a dashboard test",
 			"subtitle": "Schemas, sampling budgets, and the questions your pager will actually ask",
 			"preview": "A long-form field guide to logs, traces, and metrics as promises between teams: what every service owes its operators, how to structure a logging schema that survives contact with reality, why sampling is a product decision, and how to keep cardinality inside a budget instead of a warning. Includes worked examples in Go, YAML, and shell.",
 			"date": "2024-06-02",
