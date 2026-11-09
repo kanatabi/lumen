@@ -255,11 +255,14 @@ Bao `lumen/{env}` — §5-of-INFRA seed list; never in git). The public login en
 MUST be throttled (§8 rules) — single user + public URL makes credential stuffing *the*
 attack; argon2id makes each guess expensive, the throttle makes them rare. Session
 state is minted *here*; mellon only carries it (cookie + relay), and honors
-`expires_in` for its cookie lifetime.
+`expiresIn` for its cookie lifetime.
 
 ```
-POST   /admin/session                      → { token: JWT, expires_in } (seconds —
-                                             mellon sets its cookie maxAge from it)
+POST   /admin/session                      → { token: JWT, expiresIn } (seconds —
+                                             mellon sets its cookie maxAge from it;
+                                             camelCase per the AdminApi spec — the
+                                             snake_case drift was fixed live, see
+                                             milestone history, by the Postman walk)
 DELETE /admin/session                      → 204: bumps users.token_version (revoking
                                              every outstanding token) — mellon calls
                                              it best-effort at "end session", then
@@ -334,7 +337,9 @@ GET    /admin/search?q                     → { posts, photos, tags } — the
 GET    /admin/bao/paths                    → list metadata, policy-scoped mounts only
                                              (§9 — the portal's env/app picker)
 GET    /admin/bao/:app/:env                → read current data (?version=N for a pin)
-GET    /admin/bao/:app/:env/metadata       → version list (history panel, CAS numbers)
+GET    /admin/bao/:app/:env?meta           → version list (history panel, CAS numbers;
+                                             presence flag, not value — mirrors the
+                                             mellon relay's contract shape)
 PUT    /admin/bao/:app/:env                → CAS write ({data, cas}); returns the new
                                              version. The FOUR operations above are
                                              the ENTIRE surface (§9: thin, explicit —
