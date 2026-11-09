@@ -89,6 +89,16 @@ func Load() (Config, error) {
 		MeiliURL:      v.GetString("meili_url"),
 		MeiliKey:      v.GetString("meili_key"),
 		SessionSecret: v.GetString("session_jwt_secret"),
+		Media: Media{
+			Endpoint:     v.GetString("media_endpoint"),
+			Region:       v.GetString("media_region"),
+			Bucket:       v.GetString("media_bucket"),
+			CDNBase:      v.GetString("media_cdn_base"),
+			AccessKey:    v.GetString("media_access_key"),
+			SecretKey:    v.GetString("media_secret_key"),
+			ForcePath:    v.GetBool("media_force_path"),
+			CreateBucket: v.GetBool("media_create_bucket"),
+		},
 	}
 	if c.DBURL == "" && c.FixturePath == "" {
 		return c, fmt.Errorf("db_url (LUMEN_DB_URL) required (or fixture/LUMEN_FIXTURE for offline dev)")

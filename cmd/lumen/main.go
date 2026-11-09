@@ -13,6 +13,7 @@ import (
 	"github.com/kanatabi/lumen/internal/bao"
 	"github.com/kanatabi/lumen/internal/config"
 	"github.com/kanatabi/lumen/internal/httpapi"
+	"github.com/kanatabi/lumen/internal/media"
 	"github.com/kanatabi/lumen/internal/queue"
 	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/service"
@@ -87,6 +88,31 @@ func main() {
 			Queue:     qc,
 			JWTSecret: cfg.SessionSecret,
 			Limiter:   throttle.New(0), // per-replica in-memory backoff (documented)
+		}
+		if cfg.Media.Bucket != "" {
+			ms, _, err := media.NewS3(bootCtx, media.Config{
+				Endpoint:     cfg.Media.Endpoint,
+				Region:       cfg.Media.Region,
+				Bucket:       cfg.Media.Bucket,
+				CDNBase:      cfg.Media.CDNBase,
+				AccessKey:    cfg.Media.AccessKey,
+				SecretKey:    cfg.Media.SecretKey,
+				ForcePath:    cfg.Media.ForcePath,
+				CreateBucket: cfg.Media.CreateBucket,
+			})
+			if err != nil {
+				log.Fatalf("media store: %v", err)
+			}
+			adminDeps.Media = ms
+			adminDeps.MediaEndpoint, adminDeps.MediaBucket, adminDeps.MediaCDNBase =
+				cfg.Media.Endpoint, cfg.Media.Bucket, cfg.Media.CDNBase
+			if cfg.Media.CreateBucket {
+				log.Printf("media: S3-compatible relay configured (bucket %s, dev create-bucket on)", cfg.Media.Bucket)
+			} else {
+				log.Printf("media: S3-compatible relay configured (bucket %s)", cfg.Media.Bucket)
+			}
+		} else {
+			log.Print("media: not configured — POST /admin/photos answers 503 honestly (§5)")
 		}
 		if bao.Enabled() {
 			bc, err := bao.New()

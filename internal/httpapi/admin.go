@@ -86,7 +86,11 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	s.admin.Limiter.Success(ipKey)
 	s.admin.Limiter.Success(accKey)
 	slog.Info("session.grant", "user", in.Username)
-	writeJSON(w, http.StatusOK, map[string]any{"token": tok, "expires_in": expiresIn})
+	// camelCase per mellon's AdminApi (the executable spec — types.ts
+	// consumes expiresIn to size the cookie; the snake_case drift here
+	// survived only because the integration test mirrored the HANDLER,
+	// not the spec. Fixed by the Postman round's contract assert.)
+	writeJSON(w, http.StatusOK, map[string]any{"token": tok, "expiresIn": expiresIn})
 }
 
 // adminAuth: signature says WHO (pinned HS256 — session.Parse), truth says

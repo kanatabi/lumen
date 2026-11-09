@@ -42,6 +42,26 @@ func TestPostgresRequiresSessionSecret(t *testing.T) {
 	}
 }
 
+func TestMediaEnvBinds(t *testing.T) {
+	// the M5 patch BOUND media_* but never POPULATED the struct — a bucket
+	// in env, an empty Config.Media, and a 503 that outlived the whole
+	// milestone. This test is the difference between bound and wired.
+	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
+	t.Setenv("LUMEN_SESSION_JWT_SECRET", "s")
+	t.Setenv("LUMEN_FIXTURE", "")
+	t.Setenv("LUMEN_CONFIG", "")
+	t.Setenv("LUMEN_MEDIA_BUCKET", "lumen-media-dev")
+	t.Setenv("LUMEN_MEDIA_ENDPOINT", "http://localhost:4566")
+	t.Setenv("LUMEN_MEDIA_FORCE_PATH", "true")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Media.Bucket != "lumen-media-dev" || c.Media.Endpoint != "http://localhost:4566" || !c.Media.ForcePath {
+		t.Fatalf("media env not populated: %+v", c.Media)
+	}
+}
+
 func TestRequiresDBOrFixture(t *testing.T) {
 	t.Setenv("LUMEN_DB_URL", "")
 	t.Setenv("LUMEN_SESSION_JWT_SECRET", "")

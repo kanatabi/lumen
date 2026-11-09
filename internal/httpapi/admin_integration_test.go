@@ -154,7 +154,7 @@ func (a *adminHarness) login(user, pw string) string {
 	}
 	var out struct {
 		Token     string `json:"token"`
-		ExpiresIn int    `json:"expires_in"`
+		ExpiresIn int    `json:"expiresIn"` // mellon AdminApi: camelCase is the spec
 	}
 	if err := json.Unmarshal(res, &out); err != nil {
 		a.t.Fatal(err)
