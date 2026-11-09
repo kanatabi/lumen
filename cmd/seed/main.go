@@ -43,10 +43,23 @@ func main() {
 		log.Fatalf("river migrate: %v", err)
 	}
 	log.Print("migrations applied (schema + queue)")
-	if err := loadFixture(ctx, pool, *fixture); err != nil {
-		log.Fatalf("seed: %v", err)
+
+	// Idempotent by default (owner ruling 2026-11-09): an existing corpus is
+	// REAL data now — the portal writes to this DB — so a bare reseed must
+	// never clobber it. Migrations always run (they are version-tracked);
+	// the fixture reload is opt-in: FORCE=1 make seed.
+	var posts int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM posts`).Scan(&posts); err != nil {
+		log.Fatalf("probe: %v", err)
 	}
-	log.Print("fixture loaded")
+	if posts > 0 && os.Getenv("FORCE") == "" {
+		log.Printf("database already has %d posts — leaving rows alone (FORCE=1 to reset & reseed); still reconciling the engine", posts)
+	} else {
+		if err := loadFixture(ctx, pool, *fixture); err != nil {
+			log.Fatalf("seed: %v", err)
+		}
+		log.Print("fixture loaded")
+	}
 
 	// index everything through the REAL pipeline (engine config from env;
 	// the dev loop must exercise what production runs, not a shortcut)
