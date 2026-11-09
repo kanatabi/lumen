@@ -69,7 +69,7 @@ func (s *Server) adminCreatePost(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "json draft required")
 		return
 	}
-	d, err := s.admin.Pool.CreateAdminPost(r.Context(), in)
+	d, err := s.admin.Pool.CreateAdminPost(r.Context(), in, s.admin.Queue)
 	if err != nil {
 		if errors.Is(err, store.ErrSlugTaken) {
 			writeErr(w, http.StatusConflict, err.Error())

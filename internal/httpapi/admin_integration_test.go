@@ -340,6 +340,25 @@ func TestAdminLifecycle(t *testing.T) {
 		}
 	})
 
+	// ---- the create-draft index job (owner code-read bug) ----
+	t.Run("create enqueues the doc — admin door finds a fresh draft", func(t *testing.T) {
+		d := `{"slug":"integration-create-index","title":"Zephyrcreatescan Marker","subtitle":"","preview":"p","date":"2026-11-09","tags":[],"content":"first body\n","thumbnail":null}`
+		defer func() { _, _ = harness.admin("DELETE", "/admin/posts/integration-create-index", "") }()
+		code, res := harness.admin("POST", "/admin/posts", d)
+		if code != http.StatusCreated {
+			t.Fatalf("create %d: %s", code, res)
+		}
+		harness.drain()
+		// the engine doc must exist NOW (before any update/publish):
+		if _, res := harness.admin("GET", "/admin/search?q=zephyrcreatescan", ""); !bytes.Contains(res, []byte("integration-create-index")) {
+			t.Fatalf("fresh draft invisible at the admin door: %s", res)
+		}
+		// and the public surface still must not see it:
+		if _, res := harness.do("GET", "/api/posts/integration-create-index", "", ""); !bytes.Contains(res, []byte("not found")) {
+			t.Fatal("fresh draft leaked to the public detail route")
+		}
+	})
+
 	// ---- the seeded leak bait ----
 	t.Run("seeded draft never surfaces on any public path", func(t *testing.T) {
 		if code, _ := harness.do(http.MethodGet, "/api/posts/drafts-are-fantasies", "", ""); code != http.StatusNotFound {

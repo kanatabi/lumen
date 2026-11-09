@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -216,7 +217,7 @@ func (g *PG) GetAdminPost(ctx context.Context, slug string) (AdminPostDetail, er
 	return d, nil
 }
 
-func (g *PG) CreateAdminPost(ctx context.Context, in PostDraftInput) (AdminPostDetail, error) {
+func (g *PG) CreateAdminPost(ctx context.Context, in PostDraftInput, enqueuer indexEnqueuer) (AdminPostDetail, error) {
 	if in.Slug == "" || in.Title == "" {
 		return AdminPostDetail{}, fmt.Errorf("slug and title required")
 	}
@@ -235,9 +236,22 @@ func (g *PG) CreateAdminPost(ctx context.Context, in PostDraftInput) (AdminPostD
 		if err != nil {
 			return err
 		}
-		return linkTagsTx(ctx, tx, pid, in.Tags)
+		if err := linkTagsTx(ctx, tx, pid, in.Tags); err != nil {
+			return err
+		}
+		// a created draft must VISIBLE-AT-THE-DOOR immediately (the §8 admin
+		// search shows drafts — no engine doc until the first update made
+		// fresh drafts invisible there; the owner's code-read found this).
+		return enqueuer.InsertIndexPostTx(ctx, tx, pid)
 	})
 	if err != nil {
+		// the GetAdminPost pre-check is polite, not protective: two concurrent
+		// creates both pass it and the loser hits the partial unique. Map the
+		// race to the same 409 the pre-check path returns — never a 500.
+		var pqErr *pgconn.PgError
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return AdminPostDetail{}, ErrSlugTaken
+		}
 		return AdminPostDetail{}, err
 	}
 	return g.GetAdminPost(ctx, in.Slug)
