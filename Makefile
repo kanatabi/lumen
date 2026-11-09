@@ -83,7 +83,7 @@ test-integration: up   ## EVERY gated suite against real infra: pg + meili + emb
 
 test-media: up         ## upload relay against a REAL S3-protocol server (gofakes3 embedded)
 	go run ./cmd/seed
-	LUMEN_INTEGRATION=1 LUMEN_MEDIA=1 go test -count=1 ./internal/httpapi/ -run AdminLifecycle
+	LUMEN_INTEGRATION=1 LUMEN_MEDIA=1 go test -count=1 ./internal/api/ -run AdminLifecycle
 
 contract:                  ## the earendil-side gate: real vitest against a RUNNING lumen (make run first)
 	@curl -sf http://localhost:8080/readyz >/dev/null || { echo "lumen not reachable on :8080 — run 'make run' in another shell"; exit 1; }

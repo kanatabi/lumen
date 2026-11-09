@@ -11,8 +11,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kanatabi/lumen/internal/adminsvc"
+	"github.com/kanatabi/lumen/internal/api"
+	"github.com/kanatabi/lumen/internal/api/admin"
+	"github.com/kanatabi/lumen/internal/api/public"
 	"github.com/kanatabi/lumen/internal/bao"
-	"github.com/kanatabi/lumen/internal/httpapi"
 	"github.com/kanatabi/lumen/internal/media"
 	"github.com/kanatabi/lumen/internal/service"
 	"github.com/kanatabi/lumen/internal/throttle"
@@ -37,7 +40,6 @@ func runServer() error {
 		return err
 	}
 	defer deps.Close()
-
 	if err := deps.config.ValidateServer(); err != nil {
 		return err
 	}
@@ -60,8 +62,11 @@ func runServer() error {
 // startHTTP is the reusable HTTP lifecycle primitive (runAll composes it
 // with the worker's) — build, attach, listen in background; caller Shutdowns.
 func startHTTP(deps *dependencies) *http.Server {
-	adminDeps := buildAdminDeps(deps)
-	handler := httpapi.New(service.New(deps.store, deps.engine), deps.engine, adminDeps).Router()
+	adminHandler := buildAdmin(deps)
+	handler := api.NewRouter(
+		public.New(service.New(deps.store, deps.engine), deps.engine),
+		adminHandler,
+	)
 	srv := &http.Server{
 		Addr:              ":" + deps.config.Port,
 		Handler:           handler,
@@ -76,16 +81,14 @@ func startHTTP(deps *dependencies) *http.Server {
 	return srv
 }
 
-// buildAdminDeps wires the §8/§9/§5 surfaces (HTTP roles only).
-func buildAdminDeps(deps *dependencies) *httpapi.AdminDeps {
+// buildAdmin wires the admin business service + its HTTP handler. The
+// composition root is the ONLY place that knows which subsystems exist:
+// media/bao absence are logged, never faked; no session secret is checked
+// here (ValidateServer did) and no store call reaches past adminsvc.
+func buildAdmin(deps *dependencies) *admin.Handler {
 	cfg := deps.config
-	adminDeps := &httpapi.AdminDeps{
-		Pool:      deps.store,
-		Queue:     deps.queueClient,
-		JWTSecret: cfg.SessionSecret,
-		Limiter:   throttle.New(0), // per-replica in-memory backoff (documented)
-	}
-
+	adminSvc := adminsvc.New(deps.store, deps.queueClient, deps.engine,
+		cfg.SessionSecret, throttle.New(0)) // per-replica in-memory backoff (documented)
 	if cfg.Media.Bucket != "" {
 		mediaCfg := media.Config{
 			Endpoint:     cfg.Media.Endpoint,
@@ -103,11 +106,7 @@ func buildAdminDeps(deps *dependencies) *httpapi.AdminDeps {
 			log.Fatalf("media store: %v", err)
 		}
 
-		adminDeps.Media = mediaStore
-		adminDeps.MediaEndpoint = cfg.Media.Endpoint
-		adminDeps.MediaBucket = cfg.Media.Bucket
-		adminDeps.MediaCDNBase = cfg.Media.CDNBase
-
+		adminSvc.EnableMedia(mediaStore, mediaCfg.Endpoint, mediaCfg.Bucket, mediaCfg.CDNBase)
 		log.Printf("media: S3-compatible relay configured (bucket %s, dev create-bucket: %v)", cfg.Media.Bucket, cfg.Media.CreateBucket)
 	} else {
 		log.Print("media: not configured — POST /admin/photos answers 503 honestly (§5)")
@@ -119,11 +118,11 @@ func buildAdminDeps(deps *dependencies) *httpapi.AdminDeps {
 			log.Fatalf("bao client: %v", err)
 		}
 
-		adminDeps.Bao = baoClient
+		adminSvc.EnableBao(baoClient)
 		log.Print("secrets plane: configured (§9 relay live)")
 	} else {
 		log.Print("secrets plane: not configured — /admin/bao absent (honest, §9)")
 	}
 
-	return adminDeps
+	return admin.New(adminSvc)
 }

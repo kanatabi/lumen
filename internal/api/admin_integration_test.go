@@ -1,4 +1,4 @@
-package httpapi_test
+package api_test
 
 // admin_integration_test.go — the §8 lifecycle against REAL Postgres, REAL
 // Meilisearch, REAL river queue: login, CAS writes, the publish
@@ -27,7 +27,10 @@ import (
 	"github.com/johannesboyne/gofakes3"
 	"github.com/johannesboyne/gofakes3/backend/s3mem"
 
-	"github.com/kanatabi/lumen/internal/httpapi"
+	"github.com/kanatabi/lumen/internal/adminsvc"
+	"github.com/kanatabi/lumen/internal/api"
+	"github.com/kanatabi/lumen/internal/api/admin"
+	"github.com/kanatabi/lumen/internal/api/public"
 	"github.com/kanatabi/lumen/internal/media"
 	"github.com/kanatabi/lumen/internal/queue"
 	"github.com/kanatabi/lumen/internal/search"
@@ -42,8 +45,8 @@ type adminHarness struct {
 	h           http.Handler
 	pool        *pgxpool.Pool
 	queueClient *queue.Client
-	deps        *httpapi.AdminDeps
-	rebuild     func() // re-mount the router after mutating deps (e.g. adding §9)
+	adminSvc    *adminsvc.Service
+	rebuild     func() // re-mount the router after mutating the service (e.g. adding §9)
 	token       string
 }
 
@@ -113,8 +116,10 @@ func newAdminHarness(t *testing.T) *adminHarness {
 	}
 	t.Cleanup(func() { _ = queueClient.Stop(context.Background()) })
 
-	deps := &httpapi.AdminDeps{Pool: pg, Queue: queueClient, JWTSecret: secret, Limiter: throttle.New(time.Minute)}
-	build := func() http.Handler { return httpapi.New(service.New(pg, searchEngine), searchEngine, deps).Router() }
+	adminSvc := adminsvc.New(pg, queueClient, searchEngine, secret, throttle.New(time.Minute))
+	build := func() http.Handler {
+		return api.NewRouter(public.New(service.New(pg, searchEngine), searchEngine), admin.New(adminSvc))
+	}
 	// media relay: an EMBEDDED S3-protocol server (gofakes3 + s3mem) — a
 	// real SigV4 endpoint, in-process and deterministic; no registry luck.
 	if os.Getenv("LUMEN_MEDIA") == "1" {
@@ -136,9 +141,9 @@ func newAdminHarness(t *testing.T) *adminHarness {
 		if err != nil {
 			t.Fatal(err)
 		}
-		deps.Media, deps.MediaEndpoint, deps.MediaBucket, deps.MediaCDNBase = mediaStore, mediaConfig.Endpoint, mediaConfig.Bucket, ""
+		adminSvc.EnableMedia(mediaStore, mediaConfig.Endpoint, mediaConfig.Bucket, "")
 	}
-	harness := &adminHarness{t: t, pool: pool, queueClient: queueClient, deps: deps}
+	harness := &adminHarness{t: t, pool: pool, queueClient: queueClient, adminSvc: adminSvc}
 	harness.h = build()
 	harness.rebuild = func() { harness.h = build() }
 	harness.token = harness.login("fzr-test", "integration-pw")
@@ -557,8 +562,8 @@ func TestAdminLifecycle(t *testing.T) {
 	// ---- throttle ----
 	t.Run("throttle starves credential stuffing", func(t *testing.T) {
 		lim := throttle.New(time.Minute)
-		deps := &httpapi.AdminDeps{Pool: store.NewPG(harness.pool), Queue: nil, JWTSecret: "x", Limiter: lim}
-		h := httpapi.New(service.New(nil, nil), nil, deps).Router()
+		throttleSvc := adminsvc.New(store.NewPG(harness.pool), nil, nil, "x", lim)
+		h := api.NewRouter(public.New(service.New(nil, nil), nil), admin.New(throttleSvc))
 		for i := 0; i < 12; i++ {
 			req := httptest.NewRequest(http.MethodPost, "/admin/session",
 				strings.NewReader(`{"username":"victim","password":"guessed"}`))

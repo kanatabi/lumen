@@ -57,9 +57,16 @@ wiring scaffolding; never mistake it for the design.)
 - **Config: viper** (owner ruling, 2026-11-08), env-first: precedence env >
   optional `env.yaml` (`LUMEN_CONFIG`) > defaults, so ESO-rendered pod env
   always wins. NO dotenv autoload — production speaks real environment.
-- **One file per resource for handlers** (`posts.go`, `search.go`, `photos.go`,
-  `tags.go`; plumbing in `router.go`/`respond.go`). A package must not
-  accrete into a single file.
+- **Layered HTTP** (owner ruling, 2026-11-09): `internal/api/public` (§1)
+  and `internal/api/admin` (§8/§9) are separate packages of thin handlers —
+  one file per resource, decode/call/map/encode ONLY. Business decisions
+  live in `internal/adminsvc` (sessions, the publish unit of work with its
+  PURE derivations + unit tests, desk orchestration, the §9 relay surface);
+  the read path lives in `internal/service`; persistence lives in
+  `internal/store` (transactions + the index-job InsertTx stay HERE —
+  atomicity is a persistence concern). A handler importing store, queue,
+  or bao is a layering violation by definition. Shared transport primitives
+  are `internal/httpx`. Composition happens only in `cmd/lumen`.
 - **Names are read more often than written: spell them out** (owner ruling,
   2026-09 — a reader should never have to decode what a variable is *about*).
   No abbreviations in fields, params, or meaningful locals: `queueClient` not

@@ -2,8 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -353,51 +351,59 @@ type indexEnqueuer interface {
 // content_hash for idempotence) + state machine + Postgres row + index job
 // — one transaction, re-publishing unchanged input is a no-op (byte-stable
 // outputs; deterministic caches depend on it).
-func (g *PG) PublishAdminPost(ctx context.Context, slug string, enqueuer indexEnqueuer) (AdminPostDetail, error) {
-	var id int64
-	var status, content, preview string
+// PublishSource is the publish DECISION's input — the row facts a service
+// needs to decide + derive. Reading belongs here; deciding does not.
+type PublishSource struct {
+	ID         int64
+	Status     string
+	Content    string
+	Preview    string
+	StoredHash string // "" until a first publish ever wrote a hash
+}
+
+func (g *PG) PublishSource(ctx context.Context, slug string) (PublishSource, error) {
+	var src PublishSource
 	var hash *string
 	err := g.pool.QueryRow(ctx,
 		`SELECT id, status::text, content_md, preview, content_hash
 		 FROM posts WHERE slug = $1 AND deleted_at IS NULL`, slug).
-		Scan(&id, &status, &content, &preview, &hash)
+		Scan(&src.ID, &src.Status, &src.Content, &src.Preview, &hash)
 	if err == pgx.ErrNoRows {
-		return AdminPostDetail{}, ErrNoPosts
+		return src, ErrNoPosts
 	}
-	if err != nil {
-		return AdminPostDetail{}, err
+	if hash != nil {
+		src.StoredHash = *hash
 	}
-	if status == "published" {
-		h := sha256.Sum256([]byte(content))
-		if hash != nil && *hash == hex.EncodeToString(h[:]) {
-			return g.GetAdminPost(ctx, slug) // idempotent no-op: byte-identical
-		}
-	}
-	// machine: draft→published and unpublished→published are the legal
-	// edges; published→published with CHANGED content is the §2 re-publish
-	// (the byte-identical case already returned above)
-	h := sha256.Sum256([]byte(content))
-	hexHash := hex.EncodeToString(h[:])
-	words := countWords(content)
-	readTime := max(1, (words+199)/200) // ~200 wpm, floor 1 — §2, at publish
-	newPreview := preview
-	if strings.TrimSpace(newPreview) == "" {
-		newPreview = firstParagraph(content)
-	}
-	err = pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
+	return src, err
+}
+
+// PublishDerivation is the computed half of the §2 unit of work — prepared
+// by adminsvc's PURE functions, persisted here without recomputation: one
+// derivation implementation, unit-testable without any DB.
+type PublishDerivation struct {
+	WordCount int
+	ReadTime  int
+	Preview   string
+	Hash      string
+}
+
+// ApplyPublish is the persistence half: state + derived fields + tag counts
+// + the index job, ONE transaction (the atomicity river was chosen for).
+func (g *PG) ApplyPublish(ctx context.Context, slug string, src PublishSource, d PublishDerivation, enqueuer indexEnqueuer) (AdminPostDetail, error) {
+	err := pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`UPDATE posts SET status = 'published', word_count = $2, read_time = $3,
 			              preview = $4, content_hash = $5, rank = (SELECT COALESCE(MAX(rank),0)+1 FROM posts WHERE deleted_at IS NULL),
 			              published_at = COALESCE(published_at, now()), updated_at = now()
 			 WHERE id = $1`,
-			id, words, readTime, newPreview, hexHash); err != nil {
+			src.ID, d.WordCount, d.ReadTime, d.Preview, d.Hash); err != nil {
 			return err
 		}
 		// tag cloud counts are publish-maintained (§1: NEVER aggregated at read)
-		if err := recomputeTagCountsTx(ctx, tx, id); err != nil {
+		if err := recomputeTagCountsTx(ctx, tx, src.ID); err != nil {
 			return err
 		}
-		return enqueuer.InsertIndexPostTx(ctx, tx, id)
+		return enqueuer.InsertIndexPostTx(ctx, tx, src.ID)
 	})
 	if err != nil {
 		return AdminPostDetail{}, err
@@ -470,29 +476,4 @@ func (g *PG) DeleteAdminPost(ctx context.Context, slug string, enqueuer indexEnq
 		}
 		return enqueuer.InsertIndexPostTx(ctx, tx, id)
 	})
-}
-
-func countWords(md string) int { return len(strings.Fields(md)) }
-
-// firstParagraph: the authorless preview default (§2) — strip ATX headings
-// and fences, take the first non-empty block.
-func firstParagraph(md string) string {
-	for _, block := range strings.Split(md, "\n\n") {
-		b := strings.TrimSpace(block)
-		if b == "" || strings.HasPrefix(b, "#") || strings.HasPrefix(b, "```") ||
-			strings.HasPrefix(b, "|") || strings.HasPrefix(b, ">") {
-			continue
-		}
-		b = strings.ReplaceAll(b, "\n", " ")
-		if len(b) > 280 {
-			// clamp at a word boundary — display text, not a truncation bug
-			b = b[:280]
-			if i := strings.LastIndexByte(b, ' '); i > 200 {
-				b = b[:i]
-			}
-			b += "…"
-		}
-		return b
-	}
-	return ""
 }
