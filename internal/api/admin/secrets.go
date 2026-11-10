@@ -20,6 +20,7 @@ import (
 
 func (h *Handler) mountSecrets(a chi.Router) {
 	a.Get("/bao/paths", h.secretPaths)
+	a.Get("/bao/summary", h.secretSummary)
 	a.Post("/bao/apps", h.secretOnboard)
 	a.Post("/bao/{app}/envs", h.secretAddEnv)
 	a.Get("/bao/{app}/{env}", h.secretRead)
@@ -228,4 +229,17 @@ func (h *Handler) secretUnpin(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("bao.unpin", "app", app, "env", env)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// secretSummary: the estate matrix feed (C1) — every path, counts only.
+// Logs name the operation; there is nothing else to log.
+func (h *Handler) secretSummary(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.svc.EstateSummary(r.Context())
+	if err != nil {
+		slog.Error("bao.summary.failed", "err", err)
+		httpx.Fail(w, r, err)
+		return
+	}
+	slog.Info("bao.summary", "paths", len(rows))
+	httpx.WriteJSON(w, http.StatusOK, rows)
 }

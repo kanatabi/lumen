@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -387,5 +388,94 @@ func TestBaoControlPlane(t *testing.T) {
 	}
 	if mine != 4 {
 		t.Fatalf("itest-app envs = %d, want 4 (dev/staging/production/lab)", mine)
+	}
+}
+
+// ---- C1: the estate matrix feed — every path, counts only, pin visible ----
+func TestEstateSummary(t *testing.T) {
+	roleID, secretID := bootstrapPlane(t)
+	t.Setenv("LUMEN_BAO_ROLE_ID", roleID)
+	t.Setenv("LUMEN_BAO_SECRET_ID", secretID)
+	harness := newAdminHarness(t)
+	baoClient, err := bao.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness.adminSvc.EnableBao(baoClient)
+	harness.rebuild()
+
+	app := "itest-sum"
+	purgePaths(t, "kv/metadata/itest-sum/dev", "kv/metadata/itest-sum/staging", "kv/metadata/itest-sum/production")
+	if code, res := harness.admin(http.MethodPost, "/admin/bao/apps", `{"app":"`+app+`"}`); code != http.StatusOK {
+		t.Fatalf("onboard %d: %s", code, res)
+	}
+	// one empty value, one filled: the matrix must COUNT them
+	cv := 0
+	if code, res := harness.admin(http.MethodGet, "/admin/bao/itest-sum/dev?meta", ""); code == http.StatusOK {
+		var m struct {
+			CurrentVersion int `json:"currentVersion"`
+		}
+		_ = json.Unmarshal(res, &m)
+		cv = m.CurrentVersion
+	}
+	if code, _ := harness.admin(http.MethodPut, "/admin/bao/itest-sum/dev",
+		`{"data":{"EMPTY_ME":"","FULL_ME":"x"},"cas":`+strconv.Itoa(cv)+`}`); code != http.StatusOK {
+		t.Fatalf("write %d", code)
+	}
+	if code, _ := harness.admin(http.MethodPut, "/admin/bao/itest-sum/dev/pin", `{"version":1}`); code != http.StatusOK {
+		t.Fatalf("pin %d", code)
+	}
+
+	code, res := harness.admin(http.MethodGet, "/admin/bao/summary", "")
+	if code != http.StatusOK {
+		t.Fatalf("summary %d: %s", code, res)
+	}
+	var rows []struct {
+		App           string `json:"app"`
+		Env           string `json:"env"`
+		Version       int    `json:"version"`
+		PinnedVersion *int   `json:"pinnedVersion"`
+		Keys          int    `json:"keys"`
+		EmptyKeys     int    `json:"emptyKeys"`
+	}
+	if err := json.Unmarshal(res, &rows); err != nil {
+		t.Fatal(err)
+	}
+	var dev, staging bool
+	for _, r := range rows {
+		if r.App != app {
+			continue
+		}
+		switch r.Env {
+		case "dev":
+			dev = true
+			if r.Keys != 2 || r.EmptyKeys != 1 || r.Version < 2 {
+				t.Fatalf("dev row wrong: %+v", r)
+			}
+			if r.PinnedVersion == nil || *r.PinnedVersion != 1 {
+				t.Fatalf("pin missing from summary: %+v", r)
+			}
+		case "staging":
+			staging = true
+			// the KEY-SET MIRROR already fanned dev's shape sideways — both
+			// values arrive EMPTY: this is precisely the "onboarded but
+			// unfilled" signal the matrix exists to surface
+			if r.Keys != 2 || r.EmptyKeys != 2 || r.Version < 2 {
+				t.Fatalf("staging row wrong: %+v", r)
+			}
+		}
+	}
+	if !dev || !staging {
+		t.Fatalf("matrix rows missing (dev=%v staging=%v) — full: %s", dev, staging, res)
+	}
+	// the lumen SAMPLE paths must still be listed (matrix sees the whole estate)
+	var sawLumen bool
+	for _, r := range rows {
+		if r.App == "lumen" && r.Env == "dev" && r.Keys > 0 {
+			sawLumen = true
+		}
+	}
+	if !sawLumen {
+		t.Fatal("lumen/dev absent from the matrix")
 	}
 }
