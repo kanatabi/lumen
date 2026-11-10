@@ -21,3 +21,4 @@
 # local data
 pgdata/
 *.db
+.vite/
