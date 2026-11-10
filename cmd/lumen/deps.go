@@ -72,6 +72,21 @@ func initDependencies(ctx context.Context) (*dependencies, error) {
 		return nil, fmt.Errorf("queue: %w", err)
 	}
 
+	// Tags docs: replace-synchronous at boot (vocabulary is ~dozens of rows;
+	// the engine call is milliseconds). Idempotent by construction — every
+	// boot re-upserts {id,name} for every row, which ALSO self-heals any
+	// vocabulary doc lost between boots. Runtime deltas ride index_tag jobs.
+	// (ruling 2026-11-10: tag matching is the engine's.)
+	tdocs, err := pg.ListAllTagDocs(bootCtx)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("tag docs list: %w", err)
+	}
+	if err := engine.IndexTags(bootCtx, tdocs); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("tag docs backfill: %w", err)
+	}
+
 	log.Print("deps: postgres + meilisearch + river client ready")
 
 	return &dependencies{

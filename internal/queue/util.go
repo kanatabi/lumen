@@ -30,6 +30,7 @@ import (
 type Store interface {
 	PostDocByID(ctx context.Context, id int64) (search.PostDoc, bool, error)
 	PhotoDocByID(ctx context.Context, id int64) (search.PhotoDoc, bool, error)
+	TagDocByID(ctx context.Context, id int64) (search.TagDoc, bool, error)
 }
 
 type Engine interface {
@@ -37,6 +38,8 @@ type Engine interface {
 	DeletePosts(ctx context.Context, ids []int64) error
 	IndexPhotos(ctx context.Context, docs []search.PhotoDoc) error
 	DeletePhotos(ctx context.Context, ids []int64) error
+	IndexTags(ctx context.Context, docs []search.TagDoc) error
+	DeleteTags(ctx context.Context, ids []int64) error
 }
 
 // Client wraps the river client over the SAME pgxpool as everything else —
@@ -50,6 +53,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, store Store, eng Engine) (*Cli
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &indexPostWorker{store: store, engine: eng})
 	river.AddWorker(workers, &indexPhotoWorker{store: store, engine: eng})
+	river.AddWorker(workers, &indexTagWorker{store: store, engine: eng})
 
 	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}},

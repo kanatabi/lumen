@@ -227,7 +227,7 @@ func (g *PG) CreateAdminPost(ctx context.Context, in PostDraftInput, enqueuer in
 		return d, err
 	}
 	err = pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
-		if err := g.replaceTagsTx(ctx, tx, in.Tags); err != nil {
+		if err := g.replaceTagsTx(ctx, tx, in.Tags, enqueuer); err != nil {
 			return err
 		}
 		pid, err := insertPostTx(ctx, tx, in, "draft", 0)
@@ -267,10 +267,23 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, in PostDraftInput, status stri
 	return id, err
 }
 
-func (g *PG) replaceTagsTx(ctx context.Context, tx pgx.Tx, tags []string) error {
+// replaceTagsTx mints vocabulary rows for tag names that are new (implicit
+// creation is unchanged doctrine) — but a MINTED row now also mints its
+// engine doc intent: the index_tag job commits inside this very tx. Rows
+// that already exist are skipped (ErrNoRows from the DO NOTHING RETURNING):
+// their docs are the backfill's or a previous job's business, no churn here.
+func (g *PG) replaceTagsTx(ctx context.Context, tx pgx.Tx, tags []string, enqueuer indexEnqueuer) error {
 	for _, t := range tags {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO tags(name, posts, featured) VALUES ($1, 0, FALSE) ON CONFLICT DO NOTHING`, t); err != nil {
+		var id int64
+		err := tx.QueryRow(ctx,
+			`INSERT INTO tags(name, posts, featured) VALUES ($1, 0, FALSE) ON CONFLICT DO NOTHING RETURNING id`, t).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue // existing vocabulary row
+		}
+		if err != nil {
+			return err
+		}
+		if err := enqueuer.InsertIndexTagTx(ctx, tx, id); err != nil {
 			return err
 		}
 	}
@@ -323,7 +336,7 @@ func (g *PG) UpdateAdminPost(ctx context.Context, slug string, in PostDraftInput
 		if result.RowsAffected() != 1 {
 			return ErrRevConflict // raced between the read and this CAS — refuse
 		}
-		if err := g.replaceTagsTx(ctx, tx, in.Tags); err != nil {
+		if err := g.replaceTagsTx(ctx, tx, in.Tags, enqueuer); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM post_tags WHERE post_id = $1`, foundID); err != nil {
@@ -344,6 +357,7 @@ func (g *PG) UpdateAdminPost(ctx context.Context, slug string, in PostDraftInput
 type indexEnqueuer interface {
 	InsertIndexPostTx(ctx context.Context, tx pgx.Tx, postID int64) error
 	InsertIndexPhotoTx(ctx context.Context, tx pgx.Tx, photoID int64) error
+	InsertIndexTagTx(ctx context.Context, tx pgx.Tx, tagID int64) error
 }
 
 // Publish is the §2 UNIT OF WORK: derivations (word_count/read_time from

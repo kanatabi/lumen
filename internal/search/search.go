@@ -21,6 +21,7 @@ import (
 const (
 	IndexPosts  = "posts"
 	IndexPhotos = "photos"
+	IndexTags   = "tags"
 )
 
 // PostDoc is the indexed projection of a post. Display truth does NOT live
@@ -55,6 +56,16 @@ type PhotoDoc struct {
 	Collection *string `json:"collection"`
 }
 
+// TagDoc is the vocabulary's indexed projection — {id, name} and NOTHING
+// else (owner ruling 2026-11-10: tag SEARCH rides the engine so typo-
+// tolerance is one story everywhere; counts and `featured` deliberately do
+// NOT live here — they hydrate from Postgres per response). The engine
+// answers "which names does this query resemble"; the DB remains truth.
+type TagDoc struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
 // DayInt converts the editorial YYYY-MM-DD to its sortable/filterable integer.
 func DayInt(date string) int {
 	d := strings.ReplaceAll(date[:10], "-", "")
@@ -77,7 +88,7 @@ func New(url, key string) *Service {
 // settings every boot (harmless re-application is the honest way to keep
 // dev-recreated and long-lived engines identical).
 func (s *Service) Ensure(ctx context.Context) error {
-	for _, uid := range []string{IndexPosts, IndexPhotos} {
+	for _, uid := range []string{IndexPosts, IndexPhotos, IndexTags} {
 		if _, err := s.client.GetIndex(uid); err != nil {
 			if _, err := s.client.CreateIndex(&meili.IndexConfig{Uid: uid, PrimaryKey: "id"}); err != nil &&
 				!strings.Contains(err.Error(), "already_exists") {
@@ -88,8 +99,11 @@ func (s *Service) Ensure(ctx context.Context) error {
 			}
 		}
 		settings := postsSettings()
-		if uid == IndexPhotos {
+		switch uid {
+		case IndexPhotos:
 			settings = photosSettings()
+		case IndexTags:
+			settings = tagsSettings()
 		}
 		task, err := s.client.Index(uid).UpdateSettingsWithContext(ctx, settings)
 		if err != nil {
@@ -122,6 +136,16 @@ func photosSettings() *meili.Settings {
 		DisplayedAttributes:  []string{"id"},
 		FilterableAttributes: []string{"gallery", "collection"},
 		SortableAttributes:   []string{"sort"},
+	}
+}
+
+func tagsSettings() *meili.Settings {
+	return &meili.Settings{
+		SearchableAttributes: []string{"name"},
+		DisplayedAttributes:  []string{"id"},
+		// typo tolerance is the ENTIRE point of moving vocabulary here from
+		// the Postgres prefix lookup — default ON is the engine's honest
+		// middle; single-token tag names are exactly its sweet spot.
 	}
 }
 
@@ -209,6 +233,28 @@ func strIDs(ids []int64) []string {
 		out[i] = strconv.FormatInt(id, 10)
 	}
 	return out
+}
+
+func (s *Service) IndexTags(ctx context.Context, docs []TagDoc) error {
+	if len(docs) == 0 {
+		return nil
+	}
+	task, err := s.client.Index(IndexTags).UpdateDocumentsWithContext(ctx, docs, primaryKey())
+	if err != nil {
+		return err
+	}
+	return s.waitTask(ctx, task)
+}
+
+func (s *Service) DeleteTags(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	task, err := s.client.Index(IndexTags).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
+	if err != nil {
+		return err
+	}
+	return s.waitTask(ctx, task)
 }
 
 // Ready powers /readyz: the engine must ANSWER, not just accept TCP.

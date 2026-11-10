@@ -94,6 +94,15 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+	tids, err := pg.AllTagIDs(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, id := range tids {
+		if err := queueClient.EnqueueIndexTag(ctx, id); err != nil {
+			log.Fatal(err)
+		}
+	}
 	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := queueClient.Drain(dctx); err != nil {

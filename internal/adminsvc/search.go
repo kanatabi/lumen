@@ -16,8 +16,12 @@ type SearchResults struct {
 }
 
 // Search is the admin door: the SAME engine minus the public restrictions
-// (drafts included, photos unfiltered by gallery). The tags group is a
-// VOCABULARY prefix lookup from Postgres — a name, not a document.
+// (drafts included, photos unfiltered by gallery). The tags group rides the
+// engine too since the 2026-11-10 ruling — matching is one story everywhere
+// (typo tolerance included); the superseded doctrine ("a name, not a
+// document") held while the only engine-side option was a prefix lookup,
+// and {id, name} docs + DB hydration now give fuzzy names WITHOUT letting
+// the index own any fact.
 func (s *Service) Search(ctx context.Context, q string) (SearchResults, error) {
 	out := SearchResults{Posts: []store.AdminPostSummary{}, Photos: []store.AdminPhoto{}, Tags: []store.TagRowOut{}}
 	if q == "" {
@@ -49,7 +53,11 @@ func (s *Service) Search(ctx context.Context, q string) (SearchResults, error) {
 			out.Photos = append(out.Photos, p)
 		}
 	}
-	tags, err := s.store.SearchTagNames(ctx, q, 8)
+	tagPage, err := s.engine.SearchTags(ctx, q, 0, 8)
+	if err != nil {
+		return out, err
+	}
+	tags, err := s.store.HydrateTagsByIDs(ctx, tagPage.IDs)
 	if err != nil {
 		return out, err
 	}

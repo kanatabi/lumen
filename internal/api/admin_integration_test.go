@@ -107,6 +107,16 @@ func newAdminHarness(t *testing.T) *adminHarness {
 	if err := searchEngine.Ensure(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// mirrors the boot hook (deps.go): tag docs replaced synchronously before
+	// anything searches them
+	tdocs, err := pg.ListAllTagDocs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := searchEngine.IndexTags(ctx, tdocs); err != nil {
+		t.Fatal(err)
+	}
+
 	queueClient, err := queue.New(ctx, pool, pg, searchEngine)
 	if err != nil {
 		t.Fatal(err)
@@ -692,5 +702,98 @@ func TestTagDesk(t *testing.T) {
 	}
 	if code, _ = harness.admin(http.MethodDelete, "/admin/tags/integration-tag-beta", ""); code != http.StatusNotFound {
 		t.Fatalf("double delete: want 404, got %d", code)
+	}
+}
+
+// ---- the tag engine (ruling 2026-11-10): vocabulary docs converge
+// asynchronously — every assert POLLS, never sleeps-and-hopes; the rename
+// fan-out to post docs is the dangerous edge and gets the sharpest test ----
+func TestTagEngine(t *testing.T) {
+	harness := newAdminHarness(t)
+	suffix := strconv.FormatInt(time.Now().UnixNano()%1_000_000, 10)
+	tag := "engine-tag-" + suffix
+
+	pollSearch := func(q, want string, wantFound bool) {
+		t.Helper()
+		deadline := time.Now().Add(8 * time.Second)
+		for {
+			code, res := harness.admin(http.MethodGet, "/admin/tags/search?q="+q+"&page=1&pageSize=30", "")
+			hit := code == http.StatusOK && strings.Contains(string(res), `"`+want+`"`)
+			if hit == wantFound {
+				if code != http.StatusOK {
+					t.Fatalf("search %q code %d: %s", q, code, res)
+				}
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("search %q: want found=%v, last=%d %s", q, wantFound, code, res)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	if code, res := harness.admin(http.MethodPost, "/admin/tags", `{"name":"`+tag+`"}`); code != http.StatusCreated {
+		t.Fatalf("create %d: %s", code, res)
+	}
+	pollSearch(tag, tag, true)
+
+	// multi-word query semantics: the engine tokenizes hyphenated names —
+	// "tag-<suffix>" finds the same row
+	pollSearch("tag-"+suffix, tag, true)
+
+	// rename → the tag doc AND every referencing post doc converge to the new
+	// name; the old name vanishes from search (the fan-out under test)
+	renamed := tag + "-beta"
+	if code, res := harness.admin(http.MethodPatch, "/admin/tags/"+tag, `{"name":"`+renamed+`"}`); code != http.StatusOK {
+		t.Fatalf("rename %d: %s", code, res)
+	}
+	pollSearch(renamed, renamed, true)
+	pollSearch(tag, tag, false)
+
+	// delete → the doc converges to absent (same job kind, worker deletes
+	// when the row is gone)
+	if code, res := harness.admin(http.MethodDelete, "/admin/tags/"+renamed, ""); code != http.StatusNoContent {
+		t.Fatalf("delete %d: %s", code, res)
+	}
+	pollSearch(renamed, renamed, false)
+
+	// the paged contract: total is the FULL match count, items are page-sized
+	defer func() {
+		for _, n := range []string{"paged-a-" + suffix, "paged-b-" + suffix, "paged-c-" + suffix} {
+			_, _ = harness.admin(http.MethodDelete, "/admin/tags/"+n, "")
+		}
+	}()
+	for _, n := range []string{"paged-a-" + suffix, "paged-b-" + suffix, "paged-c-" + suffix} {
+		if code, _ := harness.admin(http.MethodPost, "/admin/tags", `{"name":"`+n+`"}`); code != http.StatusCreated {
+			t.Fatalf("paged create %s %d", n, code)
+		}
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	var total int
+	for {
+		code, res := harness.admin(http.MethodGet, "/admin/tags/search?q=paged-&page=1&pageSize=2", "")
+		var p struct {
+			Total int               `json:"total"`
+			Items []json.RawMessage `json:"items"`
+		}
+		_ = json.Unmarshal(res, &p)
+		if code == http.StatusOK && p.Total == 3 {
+			total = p.Total
+			if len(p.Items) != 2 {
+				t.Fatalf("pageSize ignored: %s", res)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("paged total never reached 3: %d %s", code, res)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if total != 3 {
+		t.Fatal("unreachable")
+	}
+	// empty q is the client's problem: the endpoint refuses
+	if code, _ := harness.admin(http.MethodGet, "/admin/tags/search?q=&page=1", ""); code != http.StatusBadRequest {
+		t.Fatalf("empty q: want 400, got %d", code)
 	}
 }

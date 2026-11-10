@@ -51,6 +51,29 @@ func (s *Service) AdminPhotosByQuery(ctx context.Context, q string, limit int) (
 	return PhotoPage{IDs: idsOf(res), Total: res.EstimatedTotalHits}, nil
 }
 
+// TagPage is one page of engine-matched tag ids + the FULL match count
+// (estimated, honest at vocabulary scale — the desk's pager renders it).
+type TagPage struct {
+	IDs   []int64
+	Total int
+}
+
+// SearchTags: fuzzy name matching for the tag desk and the palette group
+// (typo-tolerant by engine default; empty query lists everything, which is
+// what a cleared desk bar asks for).
+func (s *Service) SearchTags(ctx context.Context, q string, offset, limit int) (TagPage, error) {
+	searchRequest := &meili.SearchRequest{
+		AttributesToRetrieve: []string{"id"},
+		Offset:               int64(max(offset, 0)),
+		Limit:                int64(max(limit, 1)),
+	}
+	res, err := s.client.Index(IndexTags).Search(q, searchRequest)
+	if err != nil {
+		return TagPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return TagPage{IDs: idsOf(res), Total: int(res.EstimatedTotalHits)}, nil
+}
+
 func adminPostFilter(q domain.ListQuery) string {
 	f := facetClauses(q) // the SAME tag/window clauses minus the status rule
 	if len(f) == 0 {

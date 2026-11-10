@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -14,7 +15,9 @@ import (
 
 func (h *Handler) mountVocab(a chi.Router) {
 	a.Get("/tags", h.listTags)
+	a.Get("/tags/search", h.searchTags)
 	a.Post("/tags", h.createTag)
+	a.Patch("/tags/bulk", h.bulkTags)
 	a.Patch("/tags/{name}", h.patchTag)
 	a.Delete("/tags/{name}", h.deleteTag)
 	a.Get("/collections", h.listCollections)
@@ -22,12 +25,58 @@ func (h *Handler) mountVocab(a chi.Router) {
 }
 
 func (h *Handler) listTags(w http.ResponseWriter, r *http.Request) {
-	tags, err := h.svc.ListTags(r.Context())
+	tags, err := h.svc.ListTags(r.Context(), r.URL.Query().Get("order"))
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, tags)
+}
+
+// searchTags: the desk bar — fuzzy lives in the engine (ruling 2026-11-10),
+// pagination rides the URL, total is honest. q is REQUIRED (an empty bar is
+// the client's list mode, not this endpoint's problem).
+func (h *Handler) searchTags(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		httpx.WriteErr(w, http.StatusBadRequest, "q required")
+		return
+	}
+	page, err := httpx.QueryInt(r, "page", 1)
+	if err != nil {
+		httpx.WriteErr(w, http.StatusBadRequest, "page must be an integer")
+		return
+	}
+	pageSize, err := httpx.QueryInt(r, "pageSize", 30)
+	if err != nil {
+		httpx.WriteErr(w, http.StatusBadRequest, "pageSize must be an integer")
+		return
+	}
+	out, err := h.svc.SearchTags(r.Context(), q, page, pageSize)
+	if err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
+}
+
+// bulkTags: the desk multi-select. One UPDATE, count of ACTUAL changes.
+func (h *Handler) bulkTags(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Names    []string `json:"names"`
+		Featured bool     `json:"featured"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || len(in.Names) == 0 {
+		httpx.WriteErr(w, http.StatusBadRequest, "expected {names: [..], featured: bool}")
+		return
+	}
+	updated, err := h.svc.BulkFeatureTags(r.Context(), in.Names, in.Featured)
+	if err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
+	slog.Info("vocab.tag.bulk", "sent", len(in.Names), "updated", updated, "featured", in.Featured)
+	httpx.WriteJSON(w, http.StatusOK, map[string]int{"updated": updated})
 }
 
 func (h *Handler) createTag(w http.ResponseWriter, r *http.Request) {
