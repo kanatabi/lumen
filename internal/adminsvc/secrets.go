@@ -207,6 +207,53 @@ func (s *Service) mirrorKeySet(ctx context.Context, app, env string, saved map[s
 	return nil
 }
 
+// SecretSummary is one cell of the estate matrix (C1): per app/env the
+// HEAD version, the pin intent, and key COUNTS — empty-key counts are the
+// "onboarded but unfilled" signal; values never leave the relay, the matrix
+// is all arithmetic over truth. Errors on one path abort the sweep honestly
+// (a half-truth matrix is worse than a visible 5xx).
+type SecretSummary struct {
+	App           string `json:"app"`
+	Env           string `json:"env"`
+	Version       int    `json:"version"`
+	PinnedVersion *int   `json:"pinnedVersion"`
+	Keys          int    `json:"keys"`
+	EmptyKeys     int    `json:"emptyKeys"`
+}
+
+func (s *Service) EstateSummary(ctx context.Context) ([]SecretSummary, error) {
+	paths, err := s.bao.ListPaths(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []SecretSummary{}
+	for _, path := range paths {
+		meta, err := s.bao.Meta(ctx, path.App, path.Env)
+		if err != nil {
+			return nil, err
+		}
+		row := SecretSummary{App: path.App, Env: path.Env}
+		if meta != nil {
+			row.Version = meta.CurrentVersion
+			row.PinnedVersion = meta.PinnedVersion
+		}
+		payload, err := s.bao.Read(ctx, path.App, path.Env, 0)
+		if err != nil {
+			return nil, err
+		}
+		if payload != nil {
+			row.Keys = len(payload.Data)
+			for _, v := range payload.Data {
+				if v == "" {
+					row.EmptyKeys++
+				}
+			}
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
 // Pin records intent (D1): the version must be a LIVE, non-destroyed
 // version of THIS path. Consumers keep reading head — nothing routes here.
 func (s *Service) Pin(ctx context.Context, app, env string, version int) error {

@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -79,9 +80,11 @@ path "kv/metadata/*"  { capabilities = ["read", "list", "patch"] }
 		t.Fatal(err)
 	}
 	// start clean: the dev server persists across runs (single container
-	// lifetime); the relay test owns
-	// lumen/dev and probes, so purge its paths (hard-delete all versions)
-	for _, p := range []string{"kv/metadata/lumen/dev", "kv/metadata/probe/test"} {
+	// lifetime); the battery owns ONLY its itest prefix (C5 ruling: the
+	// relay test used to purge/reseed lumen/dev — the very path a human
+	// browses in the portal — and a stale-worker collision made that real).
+	// Probes stay test-side: the `probe` app exists for no one else.
+	for _, p := range []string{"kv/metadata/itest/relay", "kv/metadata/probe/test"} {
 		if _, err := vaultAdmin.Logical().DeleteWithContext(ctx, p); err != nil {
 			t.Fatal(err)
 		}
@@ -116,7 +119,7 @@ func TestBaoRelay(t *testing.T) {
 
 	// ---- create via cas:0 ----
 	body := `{"data":{"PUBLIC_API_BASE":"http://lumen.http-server:8080","SECRET_MARKER":"s3cr3t-v4lue-MUST-NOT-BE-LOGGED"},"cas":0}`
-	code, res := harness.admin(http.MethodPut, "/admin/bao/lumen/dev", body)
+	code, res := harness.admin(http.MethodPut, "/admin/bao/itest/relay", body)
 	if code != http.StatusCreated && code != http.StatusOK {
 		t.Fatalf("create %d: %s", code, res)
 	}
@@ -132,14 +135,14 @@ func TestBaoRelay(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logbuf, nil)))
 	defer slog.SetDefault(prev)
 
-	code, res = harness.admin(http.MethodGet, "/admin/bao/lumen/dev", "")
+	code, res = harness.admin(http.MethodGet, "/admin/bao/itest/relay", "")
 	if code != http.StatusOK {
 		t.Fatalf("read %d: %s", code, res)
 	}
 	if !bytes.Contains(res, []byte("s3cr3t-v4lue-MUST-NOT-BE-LOGGED")) {
 		t.Fatal("relay response lost the value (the UI needs it to mask!)")
 	}
-	_, _ = harness.admin(http.MethodPut, "/admin/bao/lumen/dev", `{"data":{"SECRET_MARKER":"s3cr3t-v4lue-MUST-NOT-BE-LOGGED","A":"B"},"cas":1}`)
+	_, _ = harness.admin(http.MethodPut, "/admin/bao/itest/relay", `{"data":{"SECRET_MARKER":"s3cr3t-v4lue-MUST-NOT-BE-LOGGED","A":"B"},"cas":1}`)
 	slog.SetDefault(prev)
 	if strings.Contains(logbuf.String(), "s3cr3t-v4lue-MUST-NOT-BE-LOGGED") {
 		t.Fatalf("secret value appeared in lumen logs:\n%s", logbuf.String())
@@ -149,17 +152,17 @@ func TestBaoRelay(t *testing.T) {
 	}
 
 	// ---- stale cas is a 409, never a silent clobber ----
-	if code, _ := harness.admin(http.MethodPut, "/admin/bao/lumen/dev", `{"data":{"X":"Y"},"cas":0}`); code != http.StatusConflict {
+	if code, _ := harness.admin(http.MethodPut, "/admin/bao/itest/relay", `{"data":{"X":"Y"},"cas":0}`); code != http.StatusConflict {
 		t.Fatalf("stale cas code %d, want 409", code)
 	}
 
 	// ---- version pin + metadata ----
-	code, res = harness.admin(http.MethodGet, "/admin/bao/lumen/dev?version=1", "")
+	code, res = harness.admin(http.MethodGet, "/admin/bao/itest/relay?version=1", "")
 	if code != http.StatusOK || !bytes.Contains(res, []byte("PUBLIC_API_BASE")) || bytes.Contains(res, []byte(`"A":"B"`)) {
 		t.Fatalf("version pin: %d %s", code, res)
 	}
 	// metadata via the ?meta flag — presence-based, mirroring mellon's relay
-	code, res = harness.admin(http.MethodGet, "/admin/bao/lumen/dev?meta", "")
+	code, res = harness.admin(http.MethodGet, "/admin/bao/itest/relay?meta", "")
 	if code != http.StatusOK {
 		t.Fatalf("meta %d: %s", code, res)
 	}
@@ -385,5 +388,94 @@ func TestBaoControlPlane(t *testing.T) {
 	}
 	if mine != 4 {
 		t.Fatalf("itest-app envs = %d, want 4 (dev/staging/production/lab)", mine)
+	}
+}
+
+// ---- C1: the estate matrix feed — every path, counts only, pin visible ----
+func TestEstateSummary(t *testing.T) {
+	roleID, secretID := bootstrapPlane(t)
+	t.Setenv("LUMEN_BAO_ROLE_ID", roleID)
+	t.Setenv("LUMEN_BAO_SECRET_ID", secretID)
+	harness := newAdminHarness(t)
+	baoClient, err := bao.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness.adminSvc.EnableBao(baoClient)
+	harness.rebuild()
+
+	app := "itest-sum"
+	purgePaths(t, "kv/metadata/itest-sum/dev", "kv/metadata/itest-sum/staging", "kv/metadata/itest-sum/production")
+	if code, res := harness.admin(http.MethodPost, "/admin/bao/apps", `{"app":"`+app+`"}`); code != http.StatusOK {
+		t.Fatalf("onboard %d: %s", code, res)
+	}
+	// one empty value, one filled: the matrix must COUNT them
+	cv := 0
+	if code, res := harness.admin(http.MethodGet, "/admin/bao/itest-sum/dev?meta", ""); code == http.StatusOK {
+		var m struct {
+			CurrentVersion int `json:"currentVersion"`
+		}
+		_ = json.Unmarshal(res, &m)
+		cv = m.CurrentVersion
+	}
+	if code, _ := harness.admin(http.MethodPut, "/admin/bao/itest-sum/dev",
+		`{"data":{"EMPTY_ME":"","FULL_ME":"x"},"cas":`+strconv.Itoa(cv)+`}`); code != http.StatusOK {
+		t.Fatalf("write %d", code)
+	}
+	if code, _ := harness.admin(http.MethodPut, "/admin/bao/itest-sum/dev/pin", `{"version":1}`); code != http.StatusOK {
+		t.Fatalf("pin %d", code)
+	}
+
+	code, res := harness.admin(http.MethodGet, "/admin/bao/summary", "")
+	if code != http.StatusOK {
+		t.Fatalf("summary %d: %s", code, res)
+	}
+	var rows []struct {
+		App           string `json:"app"`
+		Env           string `json:"env"`
+		Version       int    `json:"version"`
+		PinnedVersion *int   `json:"pinnedVersion"`
+		Keys          int    `json:"keys"`
+		EmptyKeys     int    `json:"emptyKeys"`
+	}
+	if err := json.Unmarshal(res, &rows); err != nil {
+		t.Fatal(err)
+	}
+	var dev, staging bool
+	for _, r := range rows {
+		if r.App != app {
+			continue
+		}
+		switch r.Env {
+		case "dev":
+			dev = true
+			if r.Keys != 2 || r.EmptyKeys != 1 || r.Version < 2 {
+				t.Fatalf("dev row wrong: %+v", r)
+			}
+			if r.PinnedVersion == nil || *r.PinnedVersion != 1 {
+				t.Fatalf("pin missing from summary: %+v", r)
+			}
+		case "staging":
+			staging = true
+			// the KEY-SET MIRROR already fanned dev's shape sideways — both
+			// values arrive EMPTY: this is precisely the "onboarded but
+			// unfilled" signal the matrix exists to surface
+			if r.Keys != 2 || r.EmptyKeys != 2 || r.Version < 2 {
+				t.Fatalf("staging row wrong: %+v", r)
+			}
+		}
+	}
+	if !dev || !staging {
+		t.Fatalf("matrix rows missing (dev=%v staging=%v) — full: %s", dev, staging, res)
+	}
+	// the lumen SAMPLE paths must still be listed (matrix sees the whole estate)
+	var sawLumen bool
+	for _, r := range rows {
+		if r.App == "lumen" && r.Env == "dev" && r.Keys > 0 {
+			sawLumen = true
+		}
+	}
+	if !sawLumen {
+		t.Fatal("lumen/dev absent from the matrix")
 	}
 }
