@@ -1,0 +1,9 @@
+# build-context hygiene: the image only needs Go sources + go.mod/go.sum.
+# .git churns the COPY layer; *.env would bake DEV CREDENTIALS INTO THE IMAGE
+# (dev-plane.env carries Bao addr + AppRole ids — gitignored but NOT this-proof).
+.git
+.gitignore
+*.env
+bin/
+coverage.out
+*.test
