@@ -8,7 +8,7 @@ import "testing"
 func TestRootCommandsExist(t *testing.T) {
 	want := map[string]bool{
 		"server": false, "worker": false, "all": false,
-		"user": false, "driftcheck": false,
+		"user": false, "driftcheck": false, "migrate": false,
 	}
 	for _, cmd := range newRootCommand().Commands() {
 		if _, ok := want[cmd.Name()]; ok {
