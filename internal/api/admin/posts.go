@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -33,6 +34,7 @@ func (h *Handler) listPosts(w http.ResponseWriter, r *http.Request) {
 		Sort:   query.Get("sort"),
 		Dir:    query.Get("dir"),
 		Page:   clampPage(query.Get("page")),
+		Q:      strings.TrimSpace(query.Get("q")),
 	})
 	if err != nil {
 		httpx.Fail(w, r, err)

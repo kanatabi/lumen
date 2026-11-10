@@ -114,6 +114,10 @@ type AdminListOpts struct {
 	Dir      string
 	Page     int
 	PageSize int
+	// Q: the desk search needle — NON-empty routes the request to the
+	// engine (typo tolerance across the WHOLE corpus, honest pages,
+	// relevance order; the SQL door stays the browse path).
+	Q string
 }
 
 func (g *PG) ListAdminPosts(ctx context.Context, o AdminListOpts) (int, []AdminPostSummary, error) {
@@ -227,7 +231,7 @@ func (g *PG) CreateAdminPost(ctx context.Context, in PostDraftInput, enqueuer in
 		return d, err
 	}
 	err = pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
-		if err := g.replaceTagsTx(ctx, tx, in.Tags); err != nil {
+		if err := g.replaceTagsTx(ctx, tx, in.Tags, enqueuer); err != nil {
 			return err
 		}
 		pid, err := insertPostTx(ctx, tx, in, "draft", 0)
@@ -267,10 +271,23 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, in PostDraftInput, status stri
 	return id, err
 }
 
-func (g *PG) replaceTagsTx(ctx context.Context, tx pgx.Tx, tags []string) error {
+// replaceTagsTx mints vocabulary rows for tag names that are new (implicit
+// creation is unchanged doctrine) — but a MINTED row now also mints its
+// engine doc intent: the index_tag job commits inside this very tx. Rows
+// that already exist are skipped (ErrNoRows from the DO NOTHING RETURNING):
+// their docs are the backfill's or a previous job's business, no churn here.
+func (g *PG) replaceTagsTx(ctx context.Context, tx pgx.Tx, tags []string, enqueuer indexEnqueuer) error {
 	for _, t := range tags {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO tags(name, posts, cloud) VALUES ($1, 0, FALSE) ON CONFLICT DO NOTHING`, t); err != nil {
+		var id int64
+		err := tx.QueryRow(ctx,
+			`INSERT INTO tags(name, posts, featured) VALUES ($1, 0, FALSE) ON CONFLICT DO NOTHING RETURNING id`, t).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue // existing vocabulary row
+		}
+		if err != nil {
+			return err
+		}
+		if err := enqueuer.InsertIndexTagTx(ctx, tx, id); err != nil {
 			return err
 		}
 	}
@@ -323,7 +340,7 @@ func (g *PG) UpdateAdminPost(ctx context.Context, slug string, in PostDraftInput
 		if result.RowsAffected() != 1 {
 			return ErrRevConflict // raced between the read and this CAS — refuse
 		}
-		if err := g.replaceTagsTx(ctx, tx, in.Tags); err != nil {
+		if err := g.replaceTagsTx(ctx, tx, in.Tags, enqueuer); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM post_tags WHERE post_id = $1`, foundID); err != nil {
@@ -344,6 +361,7 @@ func (g *PG) UpdateAdminPost(ctx context.Context, slug string, in PostDraftInput
 type indexEnqueuer interface {
 	InsertIndexPostTx(ctx context.Context, tx pgx.Tx, postID int64) error
 	InsertIndexPhotoTx(ctx context.Context, tx pgx.Tx, photoID int64) error
+	InsertIndexTagTx(ctx context.Context, tx pgx.Tx, tagID int64) error
 }
 
 // Publish is the §2 UNIT OF WORK: derivations (word_count/read_time from
@@ -400,7 +418,7 @@ func (g *PG) ApplyPublish(ctx context.Context, slug string, src PublishSource, d
 			return err
 		}
 		// tag cloud counts are publish-maintained (§1: NEVER aggregated at read)
-		if err := recomputeTagCountsTx(ctx, tx, src.ID); err != nil {
+		if err := recomputeTagCountsTx(ctx, tx); err != nil {
 			return err
 		}
 		return enqueuer.InsertIndexPostTx(ctx, tx, src.ID)
@@ -411,14 +429,19 @@ func (g *PG) ApplyPublish(ctx context.Context, slug string, src PublishSource, d
 	return g.GetAdminPost(ctx, slug)
 }
 
-func recomputeTagCountsTx(ctx context.Context, tx pgx.Tx, postID int64) error {
+// recomputeTagCountsTx is TOTAL by design: every tag row takes the scalar
+// count, so a tag whose last published post went unpublished (or died) is
+// ZEROED — the join-shaped version silently kept ghost counts forever
+// (rows missing from the subquery were never written; found while planning
+// the tag desk, 2026-11-10). Scale makes the per-row subquery free; the
+// rule is what matters: the count column is truth, always recomputed from
+// it, at every publish/unpublish/delete.
+func recomputeTagCountsTx(ctx context.Context, tx pgx.Tx) error {
 	_, err := tx.Exec(ctx, `
-		UPDATE tags t SET posts = sub.c FROM (
-			SELECT pt.tag_id, count(*)::int AS c
+		UPDATE tags t SET posts = (
+			SELECT count(*)::int
 			FROM post_tags pt JOIN posts p ON p.id = pt.post_id
-			WHERE p.status = 'published' AND p.deleted_at IS NULL
-			GROUP BY pt.tag_id
-		) sub WHERE sub.tag_id = t.id`)
+			WHERE pt.tag_id = t.id AND p.status = 'published' AND p.deleted_at IS NULL)`)
 	return err
 }
 
@@ -442,7 +465,7 @@ func (g *PG) UnpublishAdminPost(ctx context.Context, slug string, enqueuer index
 			`UPDATE posts SET status='unpublished', updated_at = now() WHERE id = $1`, id); err != nil {
 			return err
 		}
-		if err := recomputeTagCountsTx(ctx, tx, id); err != nil {
+		if err := recomputeTagCountsTx(ctx, tx); err != nil {
 			return err
 		}
 		return enqueuer.InsertIndexPostTx(ctx, tx, id)
@@ -471,7 +494,7 @@ func (g *PG) DeleteAdminPost(ctx context.Context, slug string, enqueuer indexEnq
 			`UPDATE posts SET deleted_at = now(), updated_at = now() WHERE id = $1`, id); err != nil {
 			return err
 		}
-		if err := recomputeTagCountsTx(ctx, tx, id); err != nil {
+		if err := recomputeTagCountsTx(ctx, tx); err != nil {
 			return err
 		}
 		return enqueuer.InsertIndexPostTx(ctx, tx, id)

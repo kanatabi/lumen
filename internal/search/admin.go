@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	meili "github.com/meilisearch/meilisearch-go"
 
@@ -35,24 +36,85 @@ func (s *Service) AdminPostsByQuery(ctx context.Context, q domain.ListQuery) (Li
 	return ListPage{Slugs: slugsOf(res), Total: res.EstimatedTotalHits}, nil
 }
 
+// PhotoQuery: the desk's engine-search facets (gallery/collections; the
+// "" collection marker means UNCATEGORIZED, `IS NULL` in engine grammar).
+// Date windows are deliberately absent — PhotoDoc has no day attribute;
+// the UI disables the window chips while a query is active (visible
+// honesty beats silently ignored filters).
+type PhotoQuery struct {
+	Q           string
+	Collections []string
+	Gallery     *bool
+	Offset      int
+	Limit       int
+}
+
 // AdminPhotosByQuery: alt/collection search over the WHOLE library —
 // gallery=false photos may surface, because the admin palette must find
-// everything (§4).
-func (s *Service) AdminPhotosByQuery(ctx context.Context, q string, limit int) (PhotoPage, error) {
+// everything (§4). Now with the desk's facets + paging (ruling 2026-11-10:
+// desk search hits the engine, so fuzzy spans ALL pages).
+func (s *Service) AdminPhotosByQuery(ctx context.Context, pq PhotoQuery) (PhotoPage, error) {
+	var f []string
+	if pq.Gallery != nil {
+		f = append(f, fmt.Sprintf(`gallery = %v`, *pq.Gallery))
+	}
+	var ors []string
+	for _, c := range pq.Collections {
+		if c == "" {
+			ors = append(ors, `collection IS NULL`)
+		} else {
+			ors = append(ors, fmt.Sprintf(`collection = %q`, c))
+		}
+	}
+	if len(ors) > 0 {
+		f = append(f, "("+strings.Join(ors, " OR ")+")")
+	}
 	searchRequest := &meili.SearchRequest{
 		AttributesToRetrieve: []string{"id"},
+		Filter:               strings.Join(f, " AND "),
 		Sort:                 []string{"sort:asc"},
-		Limit:                int64(max(limit, 1)),
+		Offset:               int64(max(pq.Offset, 0)),
+		Limit:                int64(max(pq.Limit, 1)),
 	}
-	res, err := s.client.Index(IndexPhotos).Search(q, searchRequest)
+	res, err := s.client.Index(IndexPhotos).Search(pq.Q, searchRequest)
 	if err != nil {
 		return PhotoPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	return PhotoPage{IDs: idsOf(res), Total: res.EstimatedTotalHits}, nil
 }
 
+// TagPage is one page of engine-matched tag ids + the FULL match count
+// (estimated, honest at vocabulary scale — the desk's pager renders it).
+type TagPage struct {
+	IDs   []int64
+	Total int
+}
+
+// SearchTags: fuzzy name matching for the tag desk and the palette group
+// (typo-tolerant by engine default; empty query lists everything, which is
+// what a cleared desk bar asks for).
+func (s *Service) SearchTags(ctx context.Context, q string, offset, limit int) (TagPage, error) {
+	searchRequest := &meili.SearchRequest{
+		AttributesToRetrieve: []string{"id"},
+		Offset:               int64(max(offset, 0)),
+		Limit:                int64(max(limit, 1)),
+	}
+	res, err := s.client.Index(IndexTags).Search(q, searchRequest)
+	if err != nil {
+		return TagPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return TagPage{IDs: idsOf(res), Total: int(res.EstimatedTotalHits)}, nil
+}
+
 func adminPostFilter(q domain.ListQuery) string {
-	f := facetClauses(q) // the SAME tag/window clauses minus the status rule
+	f := facetClauses(q) // tag/window clauses (the public door's status rule lives there)
+	// the desk may filter status WHILE searching the engine — the doc carries
+	// it; only the enum words survive, anything else is dropped, never
+	// interpolated (filter strings are engine syntax, not a query surface)
+	switch q.Status {
+	case "draft", "published", "unpublished":
+		f = append(f, fmt.Sprintf(`status = "%s"`, q.Status))
+	}
 	if len(f) == 0 {
 		return ""
 	}

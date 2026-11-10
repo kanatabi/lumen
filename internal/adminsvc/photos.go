@@ -4,11 +4,45 @@ import (
 	"context"
 
 	"github.com/kanatabi/lumen/internal/media"
+	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/store"
 )
 
 func (s *Service) ListPhotos(ctx context.Context, opts store.PhotoListOpts) (int, []store.AdminPhoto, error) {
+	if opts.Q != "" {
+		return s.deskSearchPhotos(ctx, opts)
+	}
 	return s.store.ListAdminPhotos(ctx, opts)
+}
+
+// deskSearchPhotos: the engine door for ?q — collection/gallery facets ride
+// along; the DATE WINDOW cannot (PhotoDoc carries no day attribute), so the
+// UI disables window chips while a query is active — visible honesty beats
+// silently ignored filters. Relevance order + full-match total.
+func (s *Service) deskSearchPhotos(ctx context.Context, opts store.PhotoListOpts) (int, []store.AdminPhoto, error) {
+	page := max(opts.Page, 1)
+	size := opts.PageSize
+	if size <= 0 {
+		size = 24
+	}
+	pq, err := s.engine.AdminPhotosByQuery(ctx, search.PhotoQuery{
+		Q: opts.Q, Collections: opts.Collections, Gallery: opts.Gallery,
+		Offset: (page - 1) * size, Limit: size,
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	rows, err := s.store.AdminPhotoRowsByIDs(ctx, pq.IDs)
+	if err != nil {
+		return 0, nil, err
+	}
+	out := make([]store.AdminPhoto, 0, len(pq.IDs))
+	for _, id := range pq.IDs {
+		if p, ok := rows[id]; ok {
+			out = append(out, p)
+		}
+	}
+	return int(pq.Total), out, nil
 }
 func (s *Service) GetPhotoRow(ctx context.Context, id int64) (store.PhotoDocRow, error) {
 	return s.store.GetAdminPhotoRow(ctx, id)

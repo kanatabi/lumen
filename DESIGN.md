@@ -31,7 +31,7 @@ GET /api/search?q&offset&limit&tag&from&to&readMin&readMax&sort → { total, ite
 GET /api/search/suggest?q&limit    → { results: PostSummary[] }        // capped launcher (⌘K palette)
 GET /api/photos?limit              → { total, items: Photo[] }         // /gallery masonry — BE serves gallery=true ONLY (curation flag; collection is admin-internal and never filters this list)
 GET /api/photos/featured           → Photo | 404                       // kept for BE parity; the FE hero is a static identity asset — no consumer today
-GET /api/tags                      → Tag[]                             // home rail cloud: counts + order curated here
+GET /api/tags                      → Tag[]                             // home rail widget: featured AND posts>0, counts + order curated by the desk
 GET /api/feed.xml                  → RSS 2.0                           // absolute URLs built from ORIGIN (FE consumer lands at earendil M8)
 ```
 
@@ -143,8 +143,13 @@ from Postgres by id so the index can never drift the §1 shape.
   `id, alt, collection, gallery`; searchable `alt^2, collection` — the
   vocabulary curators actually remember. Public §1 search never reads it;
   gallery=false photos may, because the admin palette must find everything.
-  The §8 `tags` group does NOT ride the index — vocabulary prefix match comes
-  straight from Postgres (name lookup, not relevance search).
+  The §8 `tags` group DOES ride the index since the 2026-11-10 owner ruling —
+  docs are {id, name} ONLY (matching, no facts): typo tolerance is one story
+  across posts/photos/tags. Counts and `featured` hydrate from Postgres per
+  response, so the index can never drift a vocabulary truth. The superseded
+  doctrine ("a name, not a document") held only while prefix LIKE was the
+  best the engine could offer names; the mutation wiring (index_tag jobs +
+  rename fan-out to post docs) is the same §2 pattern everything else uses.
 
 ## 5. Media Serving — ✅ RESOLVED (D1) **revised**: object storage + CDN, upload via lumen
 
@@ -200,11 +205,15 @@ the relay-upload ingestion path instead of direct browser→bucket credentials.
   superseded — the Bao seed now holds only the JWT signing key) */, token_version
   /* bumped by logout; every JWT carries `tv` and must match */)` — one row today,
   the shape stays multi-user-honest without RBAC being real (Parked in mellon PLAN)
-- `tags(id, name u, posts, cloud)`, `post_tags(post_id, tag_id, position)`
-  — counts publish-maintained (§1, never aggregated at read); `cloud` is curated
-  MEMBERSHIP distinct from FK vocabulary (the earendil cloud ships a curated
-  subset — vocabulary rows exist so links can point somewhere; only cloud=true
-  rows serve `/api/tags`); `position` preserves author-declared tag ORDER — the
+- `tags(id, name u, posts, featured)`, `post_tags(post_id, tag_id, position)`
+  — counts publish-maintained AND TOTAL (0005 era: the recompute rewrites EVERY
+  row's count, so a tag whose last published post died reads 0, not a ghost);
+  `featured` (was `cloud` until migration 0005 — the name kept colliding with
+  "the infrastructure cloud"; `featured` now matches photos' flag of the same
+  purpose) is curated MEMBERSHIP distinct from FK vocabulary, promoted ONLY by
+  the mellon tag desk (PATCH featured) — no arithmetic auto-promotes; the public
+  `/api/tags` widget serves `featured AND posts > 0` (a featured tag at zero is
+  ready, not display-worthy); `position` preserves author-declared tag ORDER — the
   first live diff against the mock proved tag order is payload, not alphabet
 - `photos(id, src, alt, width, height, sort, featured bool, gallery bool, collection)`
   — `featured` answers `GET /api/photos/featured`; **`gallery` is the public
@@ -268,12 +277,17 @@ DELETE /admin/session                      → 204: bumps users.token_version (r
                                              it best-effort at "end session", then
                                              clears its cookie regardless (the cookie
                                              is the portal's; the REVOCATION is ours)
-GET    /admin/posts?status&tag&sort&dir&page → paged envelope { total, items, page,
+GET    /admin/posts?status&tag&sort&dir&page&q → paged envelope { total, items, page,
                                              pageSize } (§1 shape + status; sort =
                                              updated|created|published|title, dir =
                                              asc|desc, default updated/desc, page
                                              1-based clamp, pageSize 20; rows carry
-                                             createdAt + publishedAt|null)
+                                             createdAt + publishedAt|null). q NON-
+                                             EMPTY routes the desk to the ENGINE:
+                                             typo tolerance over the whole corpus,
+                                             facets (status/tag/window) ride along,
+                                             order becomes RELEVANCE (sort pauses —
+                                             the UI says so), total = full match count
 GET    /admin/posts/:slug                  → the editor's door: FULL detail incl.
                                              drafts/unpublished, rev, createdAt/
                                              publishedAt/updatedAt (§1 shape + admin
@@ -288,12 +302,16 @@ POST   /admin/posts/:slug/unpublish        → unpublished (the §4 machine: dra
                                              published ⇄ unpublished; a shipped post
                                              NEVER returns to draft); 409 otherwise
 DELETE /admin/posts/:slug                  → soft-delete (retain media for GC window)
-GET    /admin/photos?collection&gallery&from&to&sort&dir&page → paged envelope
+GET    /admin/photos?collection&gallery&from&to&sort&dir&page&q → paged envelope
                                              { total, items, page, pageSize } (collection
                                              repeated = OR, 'uncategorized' = null
                                              bucket; from/to inclusive on createdAt;
                                              sort = created|title|collection, default
-                                             created/desc; pageSize 24)
+                                             created/desc; pageSize 24). q routes to
+                                             the engine — collection/gallery facets
+                                             ride, from/to CANNOT (PhotoDoc carries no
+                                             day attribute); the desk visibly disables
+                                             window chips while searching
 POST   /admin/photos  (multipart)          → relay to object store (§5): probe dims
                                              + strip EXIF server-side BEFORE the
                                              object is public, return Photo with the
@@ -318,7 +336,24 @@ GET    /admin/collections                  → curation vocabulary (name + photo
 POST   /admin/collections                  → create a collection; name slugified,
                                              409 on duplicates (same semantics as tags)
 GET    /admin/tags                         → vocabulary (every created tag, used
-                                             or not; counts = published posts)
+                                             or not; counts = published posts; rows
+                                             carry `featured` + createdAt/updatedAt —
+                                             migration 0006; ?order=newest serves the
+                                             dashboard's recency card)
+GET    /admin/tags/search?q&page&pageSize  → desk bar: ENGINE fuzzy over the whole
+                                             vocabulary, {total, items} hydrated from
+                                             truth in relevance order; 400 without q
+PATCH  /admin/tags/bulk                    → {names[], featured}: one tx; response
+                                             counts rows that ACTUALLY changed (zero
+                                             is a truthful "already")
+PATCH  /admin/tags/{name}                  → {name?, featured?}: rename propagates
+                                             to every referencing post (id-keyed
+                                             FKs — free), collisions 409; featured
+                                             is the desk's manual widget promotion
+DELETE /admin/tags/{name}                  → refuses 409 while ANY live (non-
+                                             soft-deleted) post references it —
+                                             the message NAMES the count; 204
+                                             when free, 404 unknown
 POST   /admin/tags                         → create a vocabulary entry; name is
                                              slugified, 409 on duplicates — the
                                              portal creates eagerly, saves never

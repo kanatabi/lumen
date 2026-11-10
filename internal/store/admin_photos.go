@@ -58,6 +58,8 @@ type PhotoListOpts struct {
 	Dir         string
 	Page        int
 	PageSize    int
+	Q           string // desk needle → engine door (facets kept; date window
+	// pauses — PhotoDoc carries no day, the UI says so)
 }
 
 // ListAdminPhotos: the darkroom envelope (§8: pageSize 24, inclusive

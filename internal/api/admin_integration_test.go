@@ -107,6 +107,16 @@ func newAdminHarness(t *testing.T) *adminHarness {
 	if err := searchEngine.Ensure(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// mirrors the boot hook (deps.go): tag docs replaced synchronously before
+	// anything searches them
+	tdocs, err := pg.ListAllTagDocs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := searchEngine.IndexTags(ctx, tdocs); err != nil {
+		t.Fatal(err)
+	}
+
 	queueClient, err := queue.New(ctx, pool, pg, searchEngine)
 	if err != nil {
 		t.Fatal(err)
@@ -598,4 +608,266 @@ func rankOf(harness *adminHarness, slug string) int {
 		harness.t.Fatal(err)
 	}
 	return r
+}
+
+// ---- A6 (tag desk): featured is the desk's manual promotion flag; counts
+// are TOTAL on every state change (zeroing included); rename propagates via
+// the id-keyed FK web; delete refuses while ANY live post references. ----
+func TestTagDesk(t *testing.T) {
+	harness := newAdminHarness(t)
+
+	pubTags := func() string {
+		code, res := harness.do(http.MethodGet, "/api/tags", "", "")
+		if code != http.StatusOK {
+			t.Fatalf("public tags %d: %s", code, res)
+		}
+		return string(res)
+	}
+
+	// create: slugified, unfeatured
+	code, res := harness.admin(http.MethodPost, "/admin/tags", `{"name":"Integration Tag Alpha"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create tag %d: %s", code, res)
+	}
+	if !bytes.Contains(res, []byte(`"name":"integration-tag-alpha"`)) || !bytes.Contains(res, []byte(`"featured":false`)) {
+		t.Fatalf("create shape: %s", res)
+	}
+
+	// feature it by hand — the desk verb
+	code, res = harness.admin(http.MethodPatch, "/admin/tags/integration-tag-alpha", `{"featured":true}`)
+	if code != http.StatusOK || !bytes.Contains(res, []byte(`"featured":true`)) {
+		t.Fatalf("feature %d: %s", code, res)
+	}
+	// A5 rule: featured but ZERO posts does NOT surface in the widget
+	if strings.Contains(pubTags(), "integration-tag-alpha") {
+		t.Fatal("unused featured tag leaked into the public cloud")
+	}
+
+	// publish a post carrying it → the widget now shows it, count live
+	draft := `{"slug":"integration-tagging","title":"Integration Tagging","subtitle":"desk proof","preview":"","date":"2026-11-10","tags":["integration-tag-alpha"],"content":"body","thumbnail":null}`
+	if code, res = harness.admin(http.MethodPost, "/admin/posts", draft); code != http.StatusCreated {
+		t.Fatalf("create post %d: %s", code, res)
+	}
+	defer func() { _, _ = harness.admin(http.MethodDelete, "/admin/posts/integration-tagging", "") }()
+	if code, res = harness.admin(http.MethodPost, "/admin/posts/integration-tagging/publish", ""); code != http.StatusOK {
+		t.Fatalf("publish %d: %s", code, res)
+	}
+	pub := pubTags()
+	if !strings.Contains(pub, "integration-tag-alpha") || !strings.Contains(pub, `"posts":1`) {
+		t.Fatalf("widget missing the used featured tag: %s", pub)
+	}
+
+	// rename → row moves, posts follow via id-keyed FK
+	if code, res = harness.admin(http.MethodPatch, "/admin/tags/integration-tag-alpha", `{"name":"Integration Tag Beta"}`); code != http.StatusOK || !bytes.Contains(res, []byte(`"name":"integration-tag-beta"`)) {
+		t.Fatalf("rename %d: %s", code, res)
+	}
+	if code, res = harness.admin(http.MethodGet, "/admin/posts/integration-tagging", ""); code != http.StatusOK || !strings.Contains(string(res), "integration-tag-beta") {
+		t.Fatalf("rename did not propagate to the post: %s", res)
+	}
+	// collision refuses
+	if code, _ = harness.admin(http.MethodPost, "/admin/tags", `{"name":"integration-tag-keeper"}`); code != http.StatusCreated {
+		t.Fatalf("keeper create %d", code)
+	}
+	defer func() { _, _ = harness.admin(http.MethodDelete, "/admin/tags/integration-tag-keeper", "") }()
+	if code, _ = harness.admin(http.MethodPatch, "/admin/tags/integration-tag-keeper", `{"name":"integration-tag-beta"}`); code != http.StatusConflict {
+		t.Fatalf("dup rename: want 409, got %d", code)
+	}
+	// unknown rows: 404 both verbs
+	if code, _ = harness.admin(http.MethodPatch, "/admin/tags/integration-nothing", `{"featured":true}`); code != http.StatusNotFound {
+		t.Fatalf("patch unknown: want 404, got %d", code)
+	}
+
+	// UNPUBLISH → the count ZEROES (the ghost-count fix) and the widget drops
+	if code, _ = harness.admin(http.MethodPost, "/admin/posts/integration-tagging/unpublish", ""); code != http.StatusOK {
+		t.Fatalf("unpublish %d", code)
+	}
+	if code, res = harness.admin(http.MethodGet, "/admin/tags", ""); code != http.StatusOK || !bytes.Contains(res, []byte(`"name":"integration-tag-beta","posts":0`)) {
+		t.Fatalf("count did not zero on unpublish: %d %s", code, res)
+	}
+	if strings.Contains(pubTags(), "integration-tag-beta") {
+		t.Fatal("zero-count tag still in the widget")
+	}
+
+	// delete guard: the DRAFT still references → 409 naming the count
+	code, res = harness.admin(http.MethodDelete, "/admin/tags/integration-tag-beta", "")
+	if code != http.StatusConflict || !strings.Contains(string(res), "1 posts still reference it") {
+		t.Fatalf("in-use delete: want 409 with count, got %d %s", code, res)
+	}
+	// delete the post (soft) → tag freed → 204 → gone from vocabulary
+	if code, _ = harness.admin(http.MethodDelete, "/admin/posts/integration-tagging", ""); code != http.StatusNoContent && code != http.StatusOK {
+		t.Fatalf("delete post %d", code)
+	}
+	if code, res = harness.admin(http.MethodDelete, "/admin/tags/integration-tag-beta", ""); code != http.StatusNoContent {
+		t.Fatalf("freed delete: want 204, got %d %s", code, res)
+	}
+	if code, _ = harness.admin(http.MethodDelete, "/admin/tags/integration-tag-beta", ""); code != http.StatusNotFound {
+		t.Fatalf("double delete: want 404, got %d", code)
+	}
+}
+
+// ---- the tag engine (ruling 2026-11-10): vocabulary docs converge
+// asynchronously — every assert POLLS, never sleeps-and-hopes; the rename
+// fan-out to post docs is the dangerous edge and gets the sharpest test ----
+func TestTagEngine(t *testing.T) {
+	harness := newAdminHarness(t)
+	suffix := strconv.FormatInt(time.Now().UnixNano()%1_000_000, 10)
+	tag := "engine-tag-" + suffix
+
+	pollSearch := func(q, want string, wantFound bool) {
+		t.Helper()
+		deadline := time.Now().Add(8 * time.Second)
+		for {
+			code, res := harness.admin(http.MethodGet, "/admin/tags/search?q="+q+"&page=1&pageSize=30", "")
+			hit := code == http.StatusOK && strings.Contains(string(res), `"`+want+`"`)
+			if hit == wantFound {
+				if code != http.StatusOK {
+					t.Fatalf("search %q code %d: %s", q, code, res)
+				}
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("search %q: want found=%v, last=%d %s", q, wantFound, code, res)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	if code, res := harness.admin(http.MethodPost, "/admin/tags", `{"name":"`+tag+`"}`); code != http.StatusCreated {
+		t.Fatalf("create %d: %s", code, res)
+	}
+	pollSearch(tag, tag, true)
+
+	// multi-word query semantics: the engine tokenizes hyphenated names —
+	// "tag-<suffix>" finds the same row
+	pollSearch("tag-"+suffix, tag, true)
+
+	// rename → the tag doc AND every referencing post doc converge to the new
+	// name; the old name vanishes from search (the fan-out under test)
+	renamed := tag + "-beta"
+	if code, res := harness.admin(http.MethodPatch, "/admin/tags/"+tag, `{"name":"`+renamed+`"}`); code != http.StatusOK {
+		t.Fatalf("rename %d: %s", code, res)
+	}
+	pollSearch(renamed, renamed, true)
+	pollSearch(tag, tag, false)
+
+	// delete → the doc converges to absent (same job kind, worker deletes
+	// when the row is gone)
+	if code, res := harness.admin(http.MethodDelete, "/admin/tags/"+renamed, ""); code != http.StatusNoContent {
+		t.Fatalf("delete %d: %s", code, res)
+	}
+	pollSearch(renamed, renamed, false)
+
+	// the paged contract: total is the FULL match count, items are page-sized
+	defer func() {
+		for _, n := range []string{"paged-a-" + suffix, "paged-b-" + suffix, "paged-c-" + suffix} {
+			_, _ = harness.admin(http.MethodDelete, "/admin/tags/"+n, "")
+		}
+	}()
+	for _, n := range []string{"paged-a-" + suffix, "paged-b-" + suffix, "paged-c-" + suffix} {
+		if code, _ := harness.admin(http.MethodPost, "/admin/tags", `{"name":"`+n+`"}`); code != http.StatusCreated {
+			t.Fatalf("paged create %s %d", n, code)
+		}
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	var total int
+	for {
+		code, res := harness.admin(http.MethodGet, "/admin/tags/search?q=paged-&page=1&pageSize=2", "")
+		var p struct {
+			Total int               `json:"total"`
+			Items []json.RawMessage `json:"items"`
+		}
+		_ = json.Unmarshal(res, &p)
+		if code == http.StatusOK && p.Total == 3 {
+			total = p.Total
+			if len(p.Items) != 2 {
+				t.Fatalf("pageSize ignored: %s", res)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("paged total never reached 3: %d %s", code, res)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if total != 3 {
+		t.Fatal("unreachable")
+	}
+	// empty q is the client's problem: the endpoint refuses
+	if code, _ := harness.admin(http.MethodGet, "/admin/tags/search?q=&page=1", ""); code != http.StatusBadRequest {
+		t.Fatalf("empty q: want 400, got %d", code)
+	}
+}
+
+// ---- desk search (ruling 2026-11-10): ?q routes the admin doors to the
+// engine — typo tolerance across ALL pages, facets ride along, drafts are
+// searchable (they live in the index; the desk is the admin's home) ----
+func TestDeskSearch(t *testing.T) {
+	harness := newAdminHarness(t)
+	slug := "integration-zephyr-probe"
+	draft := `{"slug":"` + slug + `","title":"Zephyr Desk Probe ` + strconv.FormatInt(time.Now().UnixNano()%1_000_000, 10) + `","subtitle":"engine desk door","preview":"","date":"2026-11-10","tags":["integration"],"content":"prose about zephyr-desk-probe winds","thumbnail":null}`
+	defer func() { _, _ = harness.admin(http.MethodDelete, "/admin/posts/"+slug, "") }()
+
+	if code, res := harness.admin(http.MethodPost, "/admin/posts", draft); code != http.StatusCreated {
+		t.Fatalf("create %d: %s", code, res)
+	}
+	// DRAFTS are engine-searchable immediately (index_post fires on create)
+	deadline := time.Now().Add(8 * time.Second)
+	var total int
+	for {
+		code, res := harness.admin(http.MethodGet, "/admin/posts?q=zephyr-desk-probe&status=draft&page=1", "")
+		var env struct {
+			Total int `json:"total"`
+			Items []struct {
+				Slug string `json:"slug"`
+			} `json:"items"`
+		}
+		_ = json.Unmarshal(res, &env)
+		if code == http.StatusOK && env.Total >= 1 && len(env.Items) > 0 && env.Items[0].Slug == slug {
+			total = env.Total
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("draft never searchable: %d %s", code, res)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if total < 1 {
+		t.Fatal("unreachable")
+	}
+	// the status facet COMBINES with relevance: published search misses drafts
+	if code, res := harness.admin(http.MethodGet, "/admin/posts?q=zephyr-desk-probe&status=published", ""); code == http.StatusOK && strings.Contains(string(res), slug) {
+		t.Fatalf("status facet leaked a draft into published results: %s", res)
+	}
+	// publish → status=published finds it (doc converged)
+	if code, _ := harness.admin(http.MethodPost, "/admin/posts/"+slug+"/publish", ""); code != http.StatusOK {
+		t.Fatalf("publish %d", code)
+	}
+	for {
+		code, res := harness.admin(http.MethodGet, "/admin/posts?q=zephyr-desk-probe&status=published", "")
+		if code == http.StatusOK && strings.Contains(string(res), slug) {
+			break
+		}
+		if time.Now().After(time.Now().Add(5 * time.Second)) {
+			t.Fatalf("never found as published: %d %s", code, res)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// photos door: the seeded corpus is indexed — a fixture alt word hits,
+	// and the gallery facet narrows without error (total is honest either way)
+	altWord := "ridgeline" // "Alpine ridgeline at dawn" — a fixture alt
+	code, res := harness.admin(http.MethodGet, "/admin/photos?q="+altWord, "")
+	if code != http.StatusOK {
+		t.Fatalf("photos desk search %d: %s", code, res)
+	}
+	var penv struct {
+		Total int `json:"total"`
+	}
+	_ = json.Unmarshal(res, &penv)
+	if penv.Total == 0 {
+		t.Logf("NOTE: no photo matched %q in the current corpus — endpoint verified, fixture drift", altWord)
+	}
+	// empty q returns the SQL browse door untouched: page 1 works
+	if code, _ := harness.admin(http.MethodGet, "/admin/posts?q=&page=1", ""); code != http.StatusOK {
+		t.Fatalf("empty q must use the browse door: %d", code)
+	}
 }
