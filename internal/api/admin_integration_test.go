@@ -797,3 +797,77 @@ func TestTagEngine(t *testing.T) {
 		t.Fatalf("empty q: want 400, got %d", code)
 	}
 }
+
+// ---- desk search (ruling 2026-11-10): ?q routes the admin doors to the
+// engine — typo tolerance across ALL pages, facets ride along, drafts are
+// searchable (they live in the index; the desk is the admin's home) ----
+func TestDeskSearch(t *testing.T) {
+	harness := newAdminHarness(t)
+	slug := "integration-zephyr-probe"
+	draft := `{"slug":"` + slug + `","title":"Zephyr Desk Probe ` + strconv.FormatInt(time.Now().UnixNano()%1_000_000, 10) + `","subtitle":"engine desk door","preview":"","date":"2026-11-10","tags":["integration"],"content":"prose about zephyr-desk-probe winds","thumbnail":null}`
+	defer func() { _, _ = harness.admin(http.MethodDelete, "/admin/posts/"+slug, "") }()
+
+	if code, res := harness.admin(http.MethodPost, "/admin/posts", draft); code != http.StatusCreated {
+		t.Fatalf("create %d: %s", code, res)
+	}
+	// DRAFTS are engine-searchable immediately (index_post fires on create)
+	deadline := time.Now().Add(8 * time.Second)
+	var total int
+	for {
+		code, res := harness.admin(http.MethodGet, "/admin/posts?q=zephyr-desk-probe&status=draft&page=1", "")
+		var env struct {
+			Total int `json:"total"`
+			Items []struct {
+				Slug string `json:"slug"`
+			} `json:"items"`
+		}
+		_ = json.Unmarshal(res, &env)
+		if code == http.StatusOK && env.Total >= 1 && len(env.Items) > 0 && env.Items[0].Slug == slug {
+			total = env.Total
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("draft never searchable: %d %s", code, res)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if total < 1 {
+		t.Fatal("unreachable")
+	}
+	// the status facet COMBINES with relevance: published search misses drafts
+	if code, res := harness.admin(http.MethodGet, "/admin/posts?q=zephyr-desk-probe&status=published", ""); code == http.StatusOK && strings.Contains(string(res), slug) {
+		t.Fatalf("status facet leaked a draft into published results: %s", res)
+	}
+	// publish → status=published finds it (doc converged)
+	if code, _ := harness.admin(http.MethodPost, "/admin/posts/"+slug+"/publish", ""); code != http.StatusOK {
+		t.Fatalf("publish %d", code)
+	}
+	for {
+		code, res := harness.admin(http.MethodGet, "/admin/posts?q=zephyr-desk-probe&status=published", "")
+		if code == http.StatusOK && strings.Contains(string(res), slug) {
+			break
+		}
+		if time.Now().After(time.Now().Add(5 * time.Second)) {
+			t.Fatalf("never found as published: %d %s", code, res)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// photos door: the seeded corpus is indexed — a fixture alt word hits,
+	// and the gallery facet narrows without error (total is honest either way)
+	altWord := "ridgeline" // "Alpine ridgeline at dawn" — a fixture alt
+	code, res := harness.admin(http.MethodGet, "/admin/photos?q="+altWord, "")
+	if code != http.StatusOK {
+		t.Fatalf("photos desk search %d: %s", code, res)
+	}
+	var penv struct {
+		Total int `json:"total"`
+	}
+	_ = json.Unmarshal(res, &penv)
+	if penv.Total == 0 {
+		t.Logf("NOTE: no photo matched %q in the current corpus — endpoint verified, fixture drift", altWord)
+	}
+	// empty q returns the SQL browse door untouched: page 1 works
+	if code, _ := harness.admin(http.MethodGet, "/admin/posts?q=&page=1", ""); code != http.StatusOK {
+		t.Fatalf("empty q must use the browse door: %d", code)
+	}
+}

@@ -114,6 +114,10 @@ type AdminListOpts struct {
 	Dir      string
 	Page     int
 	PageSize int
+	// Q: the desk search needle — NON-empty routes the request to the
+	// engine (typo tolerance across the WHOLE corpus, honest pages,
+	// relevance order; the SQL door stays the browse path).
+	Q string
 }
 
 func (g *PG) ListAdminPosts(ctx context.Context, o AdminListOpts) (int, []AdminPostSummary, error) {

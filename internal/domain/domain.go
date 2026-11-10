@@ -75,6 +75,11 @@ type ListQuery struct {
 	ReadMax *int
 	Sort    string // whitelisted; "" = curation/relevance order (absent = BE curation)
 	Q       string // search/suggest needle
+	// Status filters the ADMIN desk's engine search (§8: drafts are
+	// indexable truths too). Validated against the enum by the query
+	// builder; empty = no constraint. Never set on the public door, which
+	// pins published at the filter level.
+	Status string
 }
 
 const (

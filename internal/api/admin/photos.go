@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -47,6 +48,7 @@ func (h *Handler) listPhotos(w http.ResponseWriter, r *http.Request) {
 	total, items, err := h.svc.ListPhotos(r.Context(), adminsvc.PhotoListOpts{
 		Collections: query["collection"],
 		Gallery:     gallery,
+		Q:           strings.TrimSpace(query.Get("q")),
 		From:        query.Get("from"),
 		To:          query.Get("to"),
 		Sort:        query.Get("sort"),

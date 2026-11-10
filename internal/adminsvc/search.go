@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/kanatabi/lumen/internal/domain"
+	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/store"
 )
 
@@ -40,7 +41,7 @@ func (s *Service) Search(ctx context.Context, q string) (SearchResults, error) {
 			out.Posts = append(out.Posts, sum)
 		}
 	}
-	photoPage, err := s.engine.AdminPhotosByQuery(ctx, q, 8)
+	photoPage, err := s.engine.AdminPhotosByQuery(ctx, search.PhotoQuery{Q: q, Limit: 8})
 	if err != nil {
 		return out, err
 	}
