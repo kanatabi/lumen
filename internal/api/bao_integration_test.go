@@ -79,9 +79,11 @@ path "kv/metadata/*"  { capabilities = ["read", "list", "patch"] }
 		t.Fatal(err)
 	}
 	// start clean: the dev server persists across runs (single container
-	// lifetime); the relay test owns
-	// lumen/dev and probes, so purge its paths (hard-delete all versions)
-	for _, p := range []string{"kv/metadata/lumen/dev", "kv/metadata/probe/test"} {
+	// lifetime); the battery owns ONLY its itest prefix (C5 ruling: the
+	// relay test used to purge/reseed lumen/dev — the very path a human
+	// browses in the portal — and a stale-worker collision made that real).
+	// Probes stay test-side: the `probe` app exists for no one else.
+	for _, p := range []string{"kv/metadata/itest/relay", "kv/metadata/probe/test"} {
 		if _, err := vaultAdmin.Logical().DeleteWithContext(ctx, p); err != nil {
 			t.Fatal(err)
 		}
@@ -116,7 +118,7 @@ func TestBaoRelay(t *testing.T) {
 
 	// ---- create via cas:0 ----
 	body := `{"data":{"PUBLIC_API_BASE":"http://lumen.http-server:8080","SECRET_MARKER":"s3cr3t-v4lue-MUST-NOT-BE-LOGGED"},"cas":0}`
-	code, res := harness.admin(http.MethodPut, "/admin/bao/lumen/dev", body)
+	code, res := harness.admin(http.MethodPut, "/admin/bao/itest/relay", body)
 	if code != http.StatusCreated && code != http.StatusOK {
 		t.Fatalf("create %d: %s", code, res)
 	}
@@ -132,14 +134,14 @@ func TestBaoRelay(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logbuf, nil)))
 	defer slog.SetDefault(prev)
 
-	code, res = harness.admin(http.MethodGet, "/admin/bao/lumen/dev", "")
+	code, res = harness.admin(http.MethodGet, "/admin/bao/itest/relay", "")
 	if code != http.StatusOK {
 		t.Fatalf("read %d: %s", code, res)
 	}
 	if !bytes.Contains(res, []byte("s3cr3t-v4lue-MUST-NOT-BE-LOGGED")) {
 		t.Fatal("relay response lost the value (the UI needs it to mask!)")
 	}
-	_, _ = harness.admin(http.MethodPut, "/admin/bao/lumen/dev", `{"data":{"SECRET_MARKER":"s3cr3t-v4lue-MUST-NOT-BE-LOGGED","A":"B"},"cas":1}`)
+	_, _ = harness.admin(http.MethodPut, "/admin/bao/itest/relay", `{"data":{"SECRET_MARKER":"s3cr3t-v4lue-MUST-NOT-BE-LOGGED","A":"B"},"cas":1}`)
 	slog.SetDefault(prev)
 	if strings.Contains(logbuf.String(), "s3cr3t-v4lue-MUST-NOT-BE-LOGGED") {
 		t.Fatalf("secret value appeared in lumen logs:\n%s", logbuf.String())
@@ -149,17 +151,17 @@ func TestBaoRelay(t *testing.T) {
 	}
 
 	// ---- stale cas is a 409, never a silent clobber ----
-	if code, _ := harness.admin(http.MethodPut, "/admin/bao/lumen/dev", `{"data":{"X":"Y"},"cas":0}`); code != http.StatusConflict {
+	if code, _ := harness.admin(http.MethodPut, "/admin/bao/itest/relay", `{"data":{"X":"Y"},"cas":0}`); code != http.StatusConflict {
 		t.Fatalf("stale cas code %d, want 409", code)
 	}
 
 	// ---- version pin + metadata ----
-	code, res = harness.admin(http.MethodGet, "/admin/bao/lumen/dev?version=1", "")
+	code, res = harness.admin(http.MethodGet, "/admin/bao/itest/relay?version=1", "")
 	if code != http.StatusOK || !bytes.Contains(res, []byte("PUBLIC_API_BASE")) || bytes.Contains(res, []byte(`"A":"B"`)) {
 		t.Fatalf("version pin: %d %s", code, res)
 	}
 	// metadata via the ?meta flag — presence-based, mirroring mellon's relay
-	code, res = harness.admin(http.MethodGet, "/admin/bao/lumen/dev?meta", "")
+	code, res = harness.admin(http.MethodGet, "/admin/bao/itest/relay?meta", "")
 	if code != http.StatusOK {
 		t.Fatalf("meta %d: %s", code, res)
 	}
