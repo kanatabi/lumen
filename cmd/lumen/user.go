@@ -47,7 +47,7 @@ func userCommand() *cobra.Command {
 			if err := store.NewPG(pool).UpsertUser(cmd.Context(), username, hash); err != nil {
 				return err
 			}
-			fmt.Printf("user %q upserted (argon2id passhash written; token_version preserved)\n", username)
+			fmt.Printf("user %q upserted (argon2id passhash written; role=admin; token_version preserved)\n", username)
 			return nil
 		},
 	}

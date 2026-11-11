@@ -20,13 +20,17 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, http.StatusBadRequest, "json body required")
 		return
 	}
-	token, expiresIn, err := h.svc.Login(r.Context(), in.Username, in.Password, clientIP(r))
+	token, expiresIn, p, err := h.svc.Login(r.Context(), in.Username, in.Password, clientIP(r))
 	var throttled *adminsvc.ThrottledError
 	switch {
 	case err == nil:
 		slog.Info("session.grant", "user", in.Username)
-		// camelCase per mellon's AdminApi — the executable spec
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"token": token, "expiresIn": expiresIn})
+		// camelCase per mellon's AdminApi — the executable spec. role +
+		// mustChange route the portal: 428-gated users land on /setup.
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"token": token, "expiresIn": expiresIn,
+			"role": p.Role, "mustChange": p.MustChange,
+		})
 	case errors.Is(err, adminsvc.ErrEmptyCredentials):
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error())
 	case errors.As(err, &throttled):
