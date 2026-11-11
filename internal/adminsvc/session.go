@@ -9,56 +9,69 @@ import (
 	"github.com/kanatabi/lumen/internal/store"
 )
 
+// Principal is the authenticated identity handed to the transport layer:
+// who the bearer belongs to, what they may do (role), and whether they are
+// in forced-password state. Role/mustChange come from the SAME row read that
+// checks token_version — one query, no stale-claim surface, revocation-
+// consistent by construction.
+type Principal struct {
+	Username   string
+	Role       string
+	MustChange bool
+}
+
 // Login is the credential decision: throttle keys (per-IP AND per-account,
 // failures counted, success cleared), argon verification via store, and the
 // MINT of a session carrying the live token_version. Handlers hand it the
-// request facts and map the returned sentinels.
-func (s *Service) Login(ctx context.Context, username, password, ip string) (string, int, error) {
+// request facts and map the returned sentinels. The returned Principal is
+// the login-RESPONSE payload (role + mustChange drive the portal's routing).
+func (s *Service) Login(ctx context.Context, username, password, ip string) (string, int, Principal, error) {
 	username = strings.TrimSpace(username)
 	if username == "" || password == "" {
-		return "", 0, ErrEmptyCredentials // NOT a credential event: no throttle cost
+		return "", 0, Principal{}, ErrEmptyCredentials // NOT a credential event: no throttle cost
 	}
 	ipKey := "ip:" + ip
 	accountKey := "acc:" + strings.ToLower(username)
 	for _, key := range []string{ipKey, accountKey} {
 		if ok, wait := s.limiter.Allow(key); !ok {
-			return "", 0, &ThrottledError{RetryAfter: wait}
+			return "", 0, Principal{}, &ThrottledError{RetryAfter: wait}
 		}
 	}
-	tokenVersion, err := s.store.Authenticate(ctx, username, password)
+	auth, err := s.store.Authenticate(ctx, username, password)
 	if err != nil {
 		if errors.Is(err, store.ErrWrongPassword) {
 			s.limiter.Fail(ipKey)
 			s.limiter.Fail(accountKey)
-			return "", 0, ErrInvalidCredentials // ONE indistinguishable message: existence is not a signal
+			return "", 0, Principal{}, ErrInvalidCredentials // ONE indistinguishable message: existence is not a signal
 		}
-		return "", 0, err
+		return "", 0, Principal{}, err
 	}
-	token, expiresIn, err := session.MintSession(s.jwtSecret, username, tokenVersion)
+	token, expiresIn, err := session.MintSession(s.jwtSecret, username, auth.TokenVersion)
 	if err != nil {
-		return "", 0, err
+		return "", 0, Principal{}, err
 	}
 	s.limiter.Success(ipKey)
 	s.limiter.Success(accountKey)
-	return token, expiresIn, nil
+	return token, expiresIn, Principal{Username: username, Role: auth.Role, MustChange: auth.MustChange}, nil
 }
 
 // VerifyBearer is the two-half check: signature (pinned HS256 — session.Parse)
-// AND the live token_version row. Revocation lives here, not in middleware.
-func (s *Service) VerifyBearer(ctx context.Context, bearer string) error {
+// AND the live token row (which also answers role/must_change — fresh per
+// request by design). Revocation lives here, not in middleware.
+func (s *Service) VerifyBearer(ctx context.Context, bearer string) (Principal, error) {
 	token, ok := strings.CutPrefix(bearer, "Bearer ")
 	if !ok || token == "" {
-		return ErrInvalidCredentials
+		return Principal{}, ErrInvalidCredentials
 	}
 	claims, err := session.Parse(s.jwtSecret, token)
 	if err != nil {
-		return ErrInvalidCredentials
+		return Principal{}, ErrInvalidCredentials
 	}
-	tokenVersion, exists, err := s.store.TokenVersion(ctx, claims.Subject)
-	if err != nil || !exists || tokenVersion != claims.TV {
-		return ErrInvalidCredentials // bumped = dead
+	auth, exists, err := s.store.AuthFor(ctx, claims.Subject)
+	if err != nil || !exists || auth.TokenVersion != claims.TV {
+		return Principal{}, ErrInvalidCredentials // bumped = dead
 	}
-	return nil
+	return Principal{Username: claims.Subject, Role: auth.Role, MustChange: auth.MustChange}, nil
 }
 
 // Revoke is logout: bump the version so every outstanding bearer dies.
