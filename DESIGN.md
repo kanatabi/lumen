@@ -440,3 +440,15 @@ P0 = §1 read API + §8 admin API (posts/photos/publish core) + §9 (basic secre
 management). The GitOps/infra tab (Argo status, vortex commit-writer) is **deferred** —
 when it arrives it follows the same doctrine: lumen holds the token, writes go to *git*,
 the cluster keeps taking orders only from Git.
+
+> **Multi-user + setup wizard (2026-11-11, migration 0007).** users gains
+> role (admin|editor), must_change, created_at. The estate bootstraps itself:
+> while users is EMPTY, `GET /admin/setup` says unclaimed and
+> `POST /admin/setup/register` TOFU-claims it (advisory-lock atomic insert,
+> exactly one winner, 410 Gone forever after; the winner gets a session).
+> Admins `POST /admin/users` with SERVER-GENERATED syllable temps (~50 bits,
+> revealed once, argon2id-stored, never logged); `must_change` users get 428
+> Precondition Required on everything but whoami/change-password/logout —
+> the lock is transport-level, not UI courtesy. Role/flag are read from the
+> row per request (never JWT claims): resets and demotions bite immediately.
+> `lumen user` CLI stays as headless recovery (bootstrap = admin).
