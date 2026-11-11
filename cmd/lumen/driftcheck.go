@@ -16,10 +16,10 @@ import (
 // only — values never print; a drift tool that leaks secrets to CI logs is
 // not a drift tool. Exit 1 on drift, 2 on plane errors.
 func driftcheckCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "driftcheck",
 		Short: "compare staging vs production secret key sets (names only, never values)",
-		RunE: func(*cobra.Command, []string) error {
+		RunE: func(c *cobra.Command, _ []string) error {
 			baoClient, err := bao.New()
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "driftcheck:", err)
@@ -68,12 +68,75 @@ func driftcheckCommand() *cobra.Command {
 					fmt.Printf("  missing in staging:    %s\n", key)
 				}
 			}
-			if drift {
+			// C2: pin awareness. head != pinned is INTENT (D1), not failure —
+			// so the default posture is a WARN line, exit untouched. CI that
+			// wants the release-freeze enforced passes --strict-pin.
+			metaReader, err := asMetaReader(baoClient)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "driftcheck:", err)
+				os.Exit(2)
+			}
+			pinDrift, err := collectPinDrift(ctx, metaReader, paths)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "driftcheck:", err)
+				os.Exit(2)
+			}
+			for _, d := range pinDrift {
+				fmt.Printf("%s/%s: pinned v%d, head v%d (held intent)\n", d.App, d.Env, d.Pinned, d.Head)
+			}
+			strict, _ := c.Flags().GetBool("strict-pin")
+			if drift || (strict && len(pinDrift) > 0) {
 				os.Exit(1)
 			}
 			return nil
 		},
 	}
+	cmd.Flags().Bool("strict-pin", false, "fail (exit 1) when a staging/production path is pinned below its head")
+	return cmd
+}
+
+// metaPaths is the read surface collectPinDrift needs — an interface so the
+// classification is unit-testable without a live plane (vitest-style fakes are
+// not the Go way, but a 1-method seam is).
+type metaPaths interface {
+	Meta(ctx context.Context, app, env string) (*bao.Meta, error)
+}
+
+func asMetaReader(c *bao.Client) (metaPaths, error) {
+	if c == nil {
+		return nil, fmt.Errorf("bao client unavailable")
+	}
+	return c, nil
+}
+
+type pinDrift struct {
+	App, Env string
+	Head     int
+	Pinned   int
+}
+
+// collectPinDrift sweeps the staging/production paths and reports every one
+// whose PINNED version sits below the head — counts and names only, never
+// values (same rule as the key-set diff). Unpinned paths are alignment, not
+// drift: absence of intent is not a signal.
+func collectPinDrift(ctx context.Context, r metaPaths, paths []bao.Path) ([]pinDrift, error) {
+	out := []pinDrift{}
+	for _, path := range paths {
+		if path.Env != "staging" && path.Env != "production" {
+			continue
+		}
+		meta, err := r.Meta(ctx, path.App, path.Env)
+		if err != nil {
+			return nil, err
+		}
+		if meta == nil || meta.PinnedVersion == nil {
+			continue
+		}
+		if *meta.PinnedVersion != meta.CurrentVersion {
+			out = append(out, pinDrift{App: path.App, Env: path.Env, Head: meta.CurrentVersion, Pinned: *meta.PinnedVersion})
+		}
+	}
+	return out, nil
 }
 
 func diffKeyNames(a, b map[string]string) (onlyA, onlyB []string) {

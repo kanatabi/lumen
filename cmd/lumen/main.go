@@ -40,6 +40,7 @@ func newRootCommand() *cobra.Command {
 		Version: fmt.Sprintf("lumen %s", buildVersion),
 	}
 	root.AddCommand(
+		migrateCommand(),
 		serverCommand(),
 		workerCommand(),
 		allCommand(),
