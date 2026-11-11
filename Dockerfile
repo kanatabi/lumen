@@ -16,8 +16,16 @@ COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.buildVersion=${VERSION}" -o /out/lumen ./cmd/lumen
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM docker.io/library/alpine:3.24.4 AS output
+# Amended 2026-11-11 (owner): distroless's shell-less purity cost more than it
+# paid — `kubectl exec` into a misbehaving pod was impossible. The binary stays
+# static (CGO off) so alpine is ONLY an ops surface: sh + coreutils + CA certs
+# (future S3/HTTPS egress needs them regardless) + the same nonroot uid
+# distroless used (65532), so the security posture is unchanged.
+RUN addgroup -g 65532 -S lumen && adduser -u 65532 -S -G lumen -H -s /sbin/nologin lumen \
+ && apk add --no-cache ca-certificates
 COPY --from=build /out/lumen /usr/local/bin/lumen
+USER 65532
 ENV PORT=8080
 EXPOSE 8080
 # no service account baked here; the cluster decides user via securityContext
