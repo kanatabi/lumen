@@ -3,6 +3,10 @@ name: release
 # in ci.yml pushes vX.Y.Z via RELEASE_BOT_PAT specifically so this fires
 # (a GITHUB_TOKEN-pushed tag never cascades — silent no-deploy). The optional
 # manual run re-deploys an EXISTING tag: rollback without a revert.
+# Build + plan run AUTOMATICALLY; the deploy job PARKS on the protected
+# `deploy` environment — that approval is the human decision. Before
+# approving, read deploy-plan's evidence (pin pre-flight + validated rendered
+# diff) in that job's log AND the run's step summary.
 on:
   push:
     # documented glob syntax; push-release.sh is the ONLY tag author (vX.Y.Z enforced)
@@ -28,19 +32,31 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref_name }}
       - name: publish-image
-        uses: kanatabi/anvil/actions/publish-image@7183eb2808bc82d05eef7cc427c239802463f432 # v2 approval cascade
+        uses: kanatabi/anvil/actions/publish-image@259da810613d1d42a792a536bc3e1f3271701526 # v2 approval cascade
         with:
           app: lumen
           tag: ${{ inputs.tag || github.ref_name }}
           version-arg: ${{ inputs.tag || github.ref_name }}
           alias: latest
 
-  deploy:
+  deploy-plan:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: deploy-bump
-        uses: kanatabi/anvil/actions/deploy-bump@7183eb2808bc82d05eef7cc427c239802463f432 # v2 approval cascade
+      - name: plan the bump (evidence only)
+        uses: kanatabi/anvil/actions/deploy-plan@259da810613d1d42a792a536bc3e1f3271701526 # v3 informed deploy
+        with:
+          app: lumen
+          tag: ${{ inputs.tag || github.ref_name }}
+          vortex-bot-pat: ${{ secrets.VORTEX_BOT_PAT }}
+
+  deploy:
+    needs: [build, deploy-plan]
+    runs-on: ubuntu-latest
+    environment: deploy
+    steps:
+      - name: open the bump PR (human-approved)
+        uses: kanatabi/anvil/actions/deploy-bump@259da810613d1d42a792a536bc3e1f3271701526 # v3 informed deploy
         with:
           app: lumen
           tag: ${{ inputs.tag || github.ref_name }}

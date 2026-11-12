@@ -51,7 +51,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: kanatabi/anvil/actions/semver-release@7183eb2808bc82d05eef7cc427c239802463f432 # v2 approval cascade
+      - uses: kanatabi/anvil/actions/semver-release@259da810613d1d42a792a536bc3e1f3271701526 # v2 approval cascade
         with:
           bump: patch
           release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
@@ -71,7 +71,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: kanatabi/anvil/actions/semver-release@7183eb2808bc82d05eef7cc427c239802463f432 # v2 approval cascade
+      - uses: kanatabi/anvil/actions/semver-release@259da810613d1d42a792a536bc3e1f3271701526 # v2 approval cascade
         with:
           bump: minor
           release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
@@ -91,7 +91,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: kanatabi/anvil/actions/semver-release@7183eb2808bc82d05eef7cc427c239802463f432 # v2 approval cascade
+      - uses: kanatabi/anvil/actions/semver-release@259da810613d1d42a792a536bc3e1f3271701526 # v2 approval cascade
         with:
           bump: major
           release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
