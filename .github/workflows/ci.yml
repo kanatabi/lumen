@@ -29,26 +29,3 @@ jobs:
         run: go test ./... -count=1 # integration suites stay LUMEN_INTEGRATION-gated — CI runs zero-backend, by doctrine
       - name: build
         run: go build ./...
-
-  ship:
-    needs: gates
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: short sha
-        id: sid
-        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-      - name: publish-and-pin
-        uses: kanatabi/anvil/actions/publish-and-pin@50e1257eda6354b4b27d46c9ee75cca62881cdef # v1
-        with:
-          app: lumen
-          tag: sha-${{ steps.sid.outputs.short }}
-          version-arg: sha-${{ steps.sid.outputs.short }}
-          vortex-bot-pat: ${{ secrets.VORTEX_BOT_PAT }}
-      # NOTE: first push auto-creates the ghcr package INHERITING repo
-      # visibility. Owner one-time act: set ghcr.io/kanatabi/lumen PUBLIC (or
-      # wire pull secrets everywhere) — see anvil README.
