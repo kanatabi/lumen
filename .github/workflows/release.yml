@@ -1,57 +1,23 @@
 name: release
-# Dispatch IS the deploy decision: merging to main only gates — nothing ships.
-# Only released v-tags are deployable artifacts (no branch builds, no mutable
-# aliases reach vortex). First release of this repo: hand-fired major → v1.0.0.
+# The deploy pipeline — triggered BY A RELEASED TAG. The approved semver job
+# in ci.yml pushes vX.Y.Z via RELEASE_BOT_PAT specifically so this fires
+# (a GITHUB_TOKEN-pushed tag never cascades — silent no-deploy). The optional
+# manual run re-deploys an EXISTING tag: rollback without a revert.
 on:
+  push:
+    tags: ['/^v[0-9]+\.[0-9]+\.[0-9]+$/']
   workflow_dispatch:
     inputs:
-      bump:
-        type: choice
-        options: [patch, minor, major]
-        default: patch
+      tag:
+        description: existing v-tag to build + deploy (redeploy / rollback)
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  gates:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4 # org follow-up: replace third-party tags with digests
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: gofmt
-        run: |
-          bad=$(gofmt -l cmd internal)
-          [ -z "$bad" ] && echo "gofmt clean" || { echo "gofmt needed: $bad"; exit 1; }
-      - name: vet
-        run: go vet ./...
-      - name: unit suites
-        run: go test ./... -count=1 # integration suites stay LUMEN_INTEGRATION-gated — CI runs zero-backend, by doctrine
-      - name: build
-        run: go build ./...
-
-  semver:
-    needs: gates
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    outputs:
-      version: ${{ steps.rel.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # git describe needs the tags
-      - name: next v-tag
-        id: rel
-        uses: kanatabi/anvil/actions/semver-release@59e8090cee545241f95c7bb68f7d5a0858033619
-        with:
-          bump: ${{ inputs.bump }}
-
   build:
-    needs: semver
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -59,22 +25,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.semver.outputs.version }}
-      - name: publish image
-        uses: kanatabi/anvil/actions/publish-image@59e8090cee545241f95c7bb68f7d5a0858033619
+          ref: ${{ inputs.tag || github.ref_name }}
+      - name: publish-image
+        uses: kanatabi/anvil/actions/publish-image@7183eb2808bc82d05eef7cc427c239802463f432 # v2 approval cascade
         with:
           app: lumen
-          tag: ${{ needs.semver.outputs.version }}
-          version-arg: ${{ needs.semver.outputs.version }}
+          tag: ${{ inputs.tag || github.ref_name }}
+          version-arg: ${{ inputs.tag || github.ref_name }}
           alias: latest
 
   deploy:
-    needs: [semver, build]
+    needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: bump vortex pin
-        uses: kanatabi/anvil/actions/deploy-bump@59e8090cee545241f95c7bb68f7d5a0858033619
+      - name: deploy-bump
+        uses: kanatabi/anvil/actions/deploy-bump@7183eb2808bc82d05eef7cc427c239802463f432 # v2 approval cascade
         with:
           app: lumen
-          tag: ${{ needs.semver.outputs.version }}
+          tag: ${{ inputs.tag || github.ref_name }}
           vortex-bot-pat: ${{ secrets.VORTEX_BOT_PAT }}
