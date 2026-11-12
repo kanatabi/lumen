@@ -1,7 +1,6 @@
 name: ci
-# Gates on every PR; on main, publish-and-pin via anvil (SHA-pinned — the
-# renovate lesson applies to our own plumbing: bump this ref deliberately,
-# by hand, in a human PR).
+# Gates only — merges to main never deploy. Releases are dispatched by hand
+# (release.yml); deploys ride released v-tags exclusively.
 on:
   push:
     branches: [main]
