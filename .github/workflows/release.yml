@@ -32,7 +32,7 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref_name }}
       - name: publish-image
-        uses: kanatabi/anvil/actions/publish-image@259da810613d1d42a792a536bc3e1f3271701526 # v2 approval cascade
+        uses: kanatabi/anvil/actions/publish-image@696fc4901165d4cd04cd42a2a54ede74c9ed97f4 # v4 version truth+settle
         with:
           app: lumen
           tag: ${{ inputs.tag || github.ref_name }}
@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: plan the bump (evidence only)
-        uses: kanatabi/anvil/actions/deploy-plan@259da810613d1d42a792a536bc3e1f3271701526 # v3 informed deploy
+        uses: kanatabi/anvil/actions/deploy-plan@696fc4901165d4cd04cd42a2a54ede74c9ed97f4 # v4 version truth+settle
         with:
           app: lumen
           tag: ${{ inputs.tag || github.ref_name }}
@@ -56,7 +56,7 @@ jobs:
     environment: deploy
     steps:
       - name: open the bump PR (human-approved)
-        uses: kanatabi/anvil/actions/deploy-bump@259da810613d1d42a792a536bc3e1f3271701526 # v3 informed deploy
+        uses: kanatabi/anvil/actions/deploy-bump@696fc4901165d4cd04cd42a2a54ede74c9ed97f4 # v4 version truth+settle
         with:
           app: lumen
           tag: ${{ inputs.tag || github.ref_name }}
