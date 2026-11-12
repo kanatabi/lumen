@@ -1,6 +1,9 @@
 name: ci
-# Gates only — merges to main never deploy. Releases are dispatched by hand
-# (release.yml); deploys ride released v-tags exclusively.
+# Merge gates + approval-gated releases. Merging to main gates and NEVER deploys;
+# it queues three bump jobs on the PROTECTED `release` environment. A human
+# approves EXACTLY ONE — approving IS the release decision. The approved job
+# pushes a vX.Y.Z tag via RELEASE_BOT_PAT; that tag triggers release.yml
+# (build → deploy). No tag, no deploy.
 on:
   push:
     branches: [main]
@@ -8,6 +11,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   gates:
@@ -28,3 +35,57 @@ jobs:
         run: go test ./... -count=1 # integration suites stay LUMEN_INTEGRATION-gated — CI runs zero-backend, by doctrine
       - name: build
         run: go build ./...
+  # semver-patch: one of THREE approval jobs. Merge to main queues them on the
+  # PROTECTED `release` environment; a human approves EXACTLY ONE — approving
+  # IS the release decision. If these ever run WITHOUT a Waiting badge, the
+  # environment protection is missing (fail-open) — stop and fix Settings →
+  # Environments before trusting any release.
+  semver-patch:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: gates
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: kanatabi/anvil/actions/semver-release@7183eb2808bc82d05eef7cc427c239802463f432 # v2 approval cascade
+        with:
+          bump: patch
+          release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
+  # semver-minor: one of THREE approval jobs. Merge to main queues them on the
+  # PROTECTED `release` environment; a human approves EXACTLY ONE — approving
+  # IS the release decision. If these ever run WITHOUT a Waiting badge, the
+  # environment protection is missing (fail-open) — stop and fix Settings →
+  # Environments before trusting any release.
+  semver-minor:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: gates
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: kanatabi/anvil/actions/semver-release@7183eb2808bc82d05eef7cc427c239802463f432 # v2 approval cascade
+        with:
+          bump: minor
+          release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
+  # semver-major: one of THREE approval jobs. Merge to main queues them on the
+  # PROTECTED `release` environment; a human approves EXACTLY ONE — approving
+  # IS the release decision. If these ever run WITHOUT a Waiting badge, the
+  # environment protection is missing (fail-open) — stop and fix Settings →
+  # Environments before trusting any release.
+  semver-major:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: gates
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: kanatabi/anvil/actions/semver-release@7183eb2808bc82d05eef7cc427c239802463f432 # v2 approval cascade
+        with:
+          bump: major
+          release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
