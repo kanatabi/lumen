@@ -5,7 +5,8 @@ name: release
 # manual run re-deploys an EXISTING tag: rollback without a revert.
 on:
   push:
-    tags: ['/^v[0-9]+\.[0-9]+\.[0-9]+$/']
+    # documented glob syntax; push-release.sh is the ONLY tag author (vX.Y.Z enforced)
+    tags: ['v*.*.*']
   workflow_dispatch:
     inputs:
       tag:
