@@ -1,6 +1,6 @@
 name: ci
 # Merge gates + approval-gated releases. Merging to main gates and NEVER deploys;
-# it queues three bump jobs on the PROTECTED `release` environment. A human
+# it queues three bump jobs each on its own PROTECTED environment. A human
 # approves EXACTLY ONE — approving IS the release decision. The approved job
 # pushes a vX.Y.Z tag via RELEASE_BOT_PAT; that tag triggers release.yml
 # (build → deploy). No tag, no deploy.
@@ -35,16 +35,18 @@ jobs:
         run: go test ./... -count=1 # integration suites stay LUMEN_INTEGRATION-gated — CI runs zero-backend, by doctrine
       - name: build
         run: go build ./...
-  # semver-patch: one of THREE approval jobs. Merge to main queues them on the
-  # PROTECTED `release` environment; a human approves EXACTLY ONE — approving
-  # IS the release decision. If these ever run WITHOUT a Waiting badge, the
-  # environment protection is missing (fail-open) — stop and fix Settings →
-  # Environments before trusting any release.
+  # semver-patch: approval-gated release. Waits on the PROTECTED
+  # environment `release-patch` until a human approves THIS job —
+  # approving IS the release decision; the bump level is literal,
+  # nothing derived. Environments are NEVER shared between bump jobs:
+  # one environment approval releases EVERY job waiting on it (proven
+  # live 2026-11-13). No Waiting badge => this env lost protection
+  # (fail-open) — fix Settings → Environments before trusting releases.
   semver-patch:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: gates
     runs-on: ubuntu-latest
-    environment: release
+    environment: release-patch
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,16 +55,18 @@ jobs:
         with:
           bump: patch
           release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
-  # semver-minor: one of THREE approval jobs. Merge to main queues them on the
-  # PROTECTED `release` environment; a human approves EXACTLY ONE — approving
-  # IS the release decision. If these ever run WITHOUT a Waiting badge, the
-  # environment protection is missing (fail-open) — stop and fix Settings →
-  # Environments before trusting any release.
+  # semver-minor: approval-gated release. Waits on the PROTECTED
+  # environment `release-minor` until a human approves THIS job —
+  # approving IS the release decision; the bump level is literal,
+  # nothing derived. Environments are NEVER shared between bump jobs:
+  # one environment approval releases EVERY job waiting on it (proven
+  # live 2026-11-13). No Waiting badge => this env lost protection
+  # (fail-open) — fix Settings → Environments before trusting releases.
   semver-minor:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: gates
     runs-on: ubuntu-latest
-    environment: release
+    environment: release-minor
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,16 +75,18 @@ jobs:
         with:
           bump: minor
           release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
-  # semver-major: one of THREE approval jobs. Merge to main queues them on the
-  # PROTECTED `release` environment; a human approves EXACTLY ONE — approving
-  # IS the release decision. If these ever run WITHOUT a Waiting badge, the
-  # environment protection is missing (fail-open) — stop and fix Settings →
-  # Environments before trusting any release.
+  # semver-major: approval-gated release. Waits on the PROTECTED
+  # environment `release-major` until a human approves THIS job —
+  # approving IS the release decision; the bump level is literal,
+  # nothing derived. Environments are NEVER shared between bump jobs:
+  # one environment approval releases EVERY job waiting on it (proven
+  # live 2026-11-13). No Waiting badge => this env lost protection
+  # (fail-open) — fix Settings → Environments before trusting releases.
   semver-major:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: gates
     runs-on: ubuntu-latest
-    environment: release
+    environment: release-major
     steps:
       - uses: actions/checkout@v4
         with:
