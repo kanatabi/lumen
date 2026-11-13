@@ -23,6 +23,7 @@ import (
 
 	"github.com/kanatabi/lumen/internal/api"
 	"github.com/kanatabi/lumen/internal/api/public"
+	"github.com/kanatabi/lumen/internal/role"
 	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/service"
 	"github.com/kanatabi/lumen/internal/store"
@@ -58,7 +59,7 @@ func memRouter(tb testing.TB) http.Handler {
 	if !ok {
 		tb.Fatal("twin must implement the engine seam")
 	}
-	return api.NewRouter(public.New(service.New(fixtureSource, twinEngine), nil), nil) // twin serves both seams, offline
+	return api.NewRouter(public.New(service.New(fixtureSource, twinEngine), nil), nil, role.PlanesAll) // twin serves both seams, offline
 }
 
 // runContractSuite is THE harness. strictRelevance=true asserts the mock's
@@ -481,7 +482,7 @@ func TestContract_Integration_Postgres(t *testing.T) {
 	if err := searchEngine.Ensure(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	h := api.NewRouter(public.New(service.New(store.NewPG(pool), searchEngine), searchEngine), nil)
+	h := api.NewRouter(public.New(service.New(store.NewPG(pool), searchEngine), searchEngine), nil, role.PlanesAll)
 	// engine tier: relevance ordering belongs to Meilisearch (§4)
 	runContractSuite(t, h, false)
 }

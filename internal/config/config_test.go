@@ -3,7 +3,10 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+
+	"github.com/kanatabi/lumen/internal/role"
 )
 
 func TestDefaultsAndEnv(t *testing.T) {
@@ -108,5 +111,147 @@ func TestFileFillsEnvWins(t *testing.T) {
 	}
 	if c.DBURL != "postgres://env/wins" {
 		t.Fatalf("precedence broken: %+v", c)
+	}
+}
+
+// ---- role split (2026-11-13) ----
+
+func TestRoleDefaultIsLegacyAll(t *testing.T) {
+	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
+	t.Setenv("LUMEN_SESSION_JWT_SECRET", "s")
+	t.Setenv("LUMEN_ROLE", "")
+	t.Setenv("LUMEN_CONFIG", "")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Role != role.All {
+		t.Fatalf("unset LUMEN_ROLE must be the documented legacy default, got %q", c.Role)
+	}
+	if c.SessionSecret != "s" { // all binds BOTH planes' keys — dev unchanged
+		t.Fatalf("all plane lost the session binding: %+v", c)
+	}
+	if c.MeiliIndexPosts != "posts" || c.MeiliIndexPhotos != "photos" {
+		t.Fatalf("index defaults drifted (dev loop must be byte-identical): %+v", c)
+	}
+}
+
+func TestRoleRejectsGarbage(t *testing.T) {
+	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
+	t.Setenv("LUMEN_ROLE", "content")
+	t.Setenv("LUMEN_CONFIG", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("a typo in LUMEN_ROLE must be a boot error, never a silent all")
+	}
+}
+
+func TestCMSPlaneDoesNotReadSessionSecret(t *testing.T) {
+	t.Setenv("LUMEN_ROLE", "cms")
+	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
+	t.Setenv("LUMEN_CONFIG", "")
+	// even a LEAKED signing key in the pod env must not reach the cms
+	// struct — the ruling removed it from cms BINDINGS, not just usage
+	t.Setenv("LUMEN_SESSION_JWT_SECRET", "leaked-but-ignored")
+	t.Setenv("LUMEN_ADMIN_URL", "http://lumen-admin:8080")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SessionSecret != "" {
+		t.Fatalf("cms plane bound the signing key: %q", c.SessionSecret)
+	}
+	if c.AdminURL != "http://lumen-admin:8080" {
+		t.Fatalf("admin_url not bound: %+v", c)
+	}
+	if err := c.ValidateServer(); err != nil {
+		t.Fatalf("cms server validates with admin_url: %v", err)
+	}
+
+	t.Setenv("LUMEN_ADMIN_URL", "")
+	c, _ = Load()
+	if err := c.ValidateServer(); err == nil {
+		t.Fatal("cms without LUMEN_ADMIN_URL must refuse to serve (introspection has no door)")
+	}
+}
+
+func TestAdminPlaneDoesNotReadMediaOrMeili(t *testing.T) {
+	t.Setenv("LUMEN_ROLE", "admin")
+	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
+	t.Setenv("LUMEN_CONFIG", "")
+	t.Setenv("LUMEN_SESSION_JWT_SECRET", "s")
+	t.Setenv("LUMEN_MEILI_URL", "http://localhost:7700")
+	t.Setenv("LUMEN_MEDIA_BUCKET", "lumen-media")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MeiliURL != "" || c.Media.Bucket != "" {
+		t.Fatalf("admin plane bound content-plane keys: %+v", c)
+	}
+	if err := c.ValidateServer(); err != nil {
+		t.Fatalf("admin validates with the signing secret: %v", err)
+	}
+	t.Setenv("LUMEN_SESSION_JWT_SECRET", "")
+	c, _ = Load()
+	if err := c.ValidateServer(); err == nil {
+		t.Fatal("admin without the signing secret is a mint that mints garbage")
+	}
+}
+
+func TestMediaPrefixAndIndexNamesBind(t *testing.T) {
+	t.Setenv("LUMEN_ROLE", "cms")
+	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
+	t.Setenv("LUMEN_CONFIG", "")
+	t.Setenv("LUMEN_ADMIN_URL", "http://x")
+	t.Setenv("LUMEN_MEDIA_PREFIX", "staging/")
+	t.Setenv("LUMEN_MEILI_INDEX_POSTS", "cms-posts")
+	t.Setenv("LUMEN_MEILI_INDEX_PHOTOS", "cms-photos")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Media.Prefix != "staging/" || c.MeiliIndexPosts != "cms-posts" || c.MeiliIndexPhotos != "cms-photos" {
+		t.Fatalf("new cms-plane keys not populated: %+v", c)
+	}
+}
+
+func TestEnvKeysPerRole(t *testing.T) {
+	in := func(keys []string, want string) bool {
+		for _, k := range keys {
+			if k == want {
+				return true
+			}
+		}
+		return false
+	}
+	admin := EnvKeys(role.Admin)
+	cms := EnvKeys(role.CMS)
+	all := EnvKeys(role.All)
+
+	// every plane reads truth + liveness + meta
+	for _, keys := range [][]string{admin, cms, all} {
+		for _, k := range []string{"LUMEN_DB_URL", "LUMEN_PORT", "LUMEN_ROLE", "LUMEN_CONFIG"} {
+			if !in(keys, k) {
+				t.Fatalf("role keys %v miss meta key %s", keys, k)
+			}
+		}
+	}
+	// the rulings, one assert each
+	for _, k := range []string{"LUMEN_SESSION_JWT_SECRET", "LUMEN_BAO_ADDR"} {
+		if !in(admin, k) || in(cms, k) {
+			t.Fatalf("%s must bind for admin ONLY (all keeps it as union): admin=%v cms=%v", k, admin, cms)
+		}
+	}
+	for _, k := range []string{"LUMEN_ADMIN_URL", "LUMEN_MEILI_URL", "LUMEN_MEDIA_BUCKET", "LUMEN_MEILI_INDEX_POSTS", "LUMEN_MEILI_INDEX_PHOTOS", "LUMEN_MEDIA_PREFIX"} {
+		if !in(cms, k) || in(admin, k) {
+			t.Fatalf("%s must bind for cms ONLY: cms=%v admin=%v", k, cms, admin)
+		}
+	}
+	if len(all) != len(admin)+len(cms)-4 { // the four shared meta keys counted once
+		t.Fatalf("all must be the exact union: %d vs admin=%d cms=%d", len(all), len(admin), len(cms))
+	}
+	// sorted stability (the command's machine-readable promise)
+	if !slices.IsSorted(admin) || !slices.IsSorted(cms) {
+		t.Fatal("EnvKeys must be sorted")
 	}
 }

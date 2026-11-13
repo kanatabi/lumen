@@ -25,6 +25,7 @@ import (
 
 	"github.com/kanatabi/lumen/internal/adminsvc"
 	"github.com/kanatabi/lumen/internal/api/admin"
+	"github.com/kanatabi/lumen/internal/role"
 	"github.com/kanatabi/lumen/internal/store"
 	"github.com/kanatabi/lumen/internal/throttle"
 )
@@ -90,7 +91,7 @@ func TestSetupWizardE2E(t *testing.T) {
 
 	svc := adminsvc.New(store.NewPG(pool), nil, nil, "wizard-session-secret-32-bytes!!", throttle.New(time.Minute))
 	r := chi.NewRouter()
-	admin.New(svc).Mount(r)
+	admin.New(svc).Mount(r, role.PlanesAll) // dev plane: desk + control surfaces, local auth
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 	U := srv.URL

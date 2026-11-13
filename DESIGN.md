@@ -452,3 +452,46 @@ the cluster keeps taking orders only from Git.
 > the lock is transport-level, not UI courtesy. Role/flag are read from the
 > row per request (never JWT claims): resets and demotions bite immediately.
 > `lumen user` CLI stays as headless recovery (bootstrap = admin).
+
+## 8b. Process roles — the split (owner ruling 2026-11-13)
+
+One binary; `LUMEN_ROLE = "admin" | "cms"` (unset = legacy `"all"`, the dev
+plane — documented in `env.yaml.sample`). Route registration is ONE table
+(`internal/api/routes.go` `Matrix`) tagged by plane, and
+`internal/api/routes_test.go` walks the built routers against it per role:
+deployments cannot drift.
+
+**ROLE admin** (`lumen-admin`, foundation plane) — the CONTROL PLANE:
+`POST /admin/session` (the only mint), `POST /admin/session/verify` (new,
+below), whoami/logout/password, users CRUD, the Bao relay, and the ENTIRE
+TOFU wizard (the users table is admin's). Its database holds only the
+users/session-lineage migrations (0002/0007 — the users block was cut out
+of 0001, which is now cms-classified). No content routes, no queue, no
+Meilisearch dial, no `/api` reads.
+
+**ROLE cms** (`lumen-staging`/`lumen-production`) — the CONTENT PLANE:
+§1 `/api/*`, the admin content desks (posts/photos/tags/collections/media),
+the index worker; `cmd/seed` targets it. Authz: every desk request's
+bearer is INTROSPECTED at the admin plane's verify door
+(`internal/authz`, `LUMEN_ADMIN_URL`), cached 30 s keyed by token hash —
+**revocation propagates ≤30 s** at the desk edge (TTL semantics stay §8).
+Unreachable admin ⇒ **FAIL CLOSED 503** `{"error":"admin plane unreachable"}`.
+The cms DB never carries a users table (fresh-schema test); it does not
+bind `LUMEN_SESSION_JWT_SECRET` at all (config layer, tested).
+
+**verify wire contract** (mellon/agents match verbatim):
+
+```
+POST {admin}/admin/session/verify
+Authorization: Bearer <token>            (forwarded as-is; empty body)
+200 {"username": string, "role": "admin"|"editor", "mustChange": bool}
+401 {"error": "invalid token"}           (bad signature/expiry/tv — revoked)
+trust: ClusterIP-only path (lumen has no public ingress, INFRA §2); no
+extra shared secret — the admin plane IS the auth authority.
+```
+
+Media keys gained `LUMEN_MEDIA_PREFIX` (applied once at upload; §5
+composition base+prefix+key stays coherent) and the engine index uids
+became config (`LUMEN_MEILI_INDEX_POSTS/_PHOTOS`, defaults unchanged);
+`lumen config keys --role X` prints each role's bound env names from the
+config layer itself.

@@ -30,6 +30,9 @@ config layer fail-fasts, so the honest absence of anything critical is a
 start-up message, never a runtime surprise: no `LUMEN_MEILI_URL` with Postgres
 → refuses to boot (the engine IS the read path); no `LUMEN_SESSION_JWT_SECRET`
 → refuses; no media/bao config → the matching surface 503s or isn't mounted.
+(The dev loop runs the legacy `all` plane — `LUMEN_ROLE` unset; the cluster
+deploys `admin`/`cms` per DESIGN §8b, each binding only its own key family —
+`go run ./cmd/lumen config keys --role admin|cms` prints the exact set.)
 
 ### Optional surfaces
 

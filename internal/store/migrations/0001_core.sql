@@ -78,14 +78,14 @@ CREATE TABLE photos (
 );
 CREATE INDEX photos_gallery ON photos (gallery, sort);
 
--- Session era of record (lumen §8, owner 2026-11-08): credentials are a HASHED
--- DB row, not an env secret; token_version is the JWT revocation handle.
--- Table exists from M1 so migrations stay forward-honest; no row until M3.
-CREATE TABLE users (
-	username       TEXT PRIMARY KEY,
-	passhash       TEXT NOT NULL,             -- argon2id + per-user salt
-	token_version  INT NOT NULL DEFAULT 1     -- logout bumps; JWTs carry `tv`, must match
-);
+-- Session era of record (lumen §8): credentials are a HASHED DB row. The
+-- users table LIVED here until the role split (owner ruling 2026-11-13):
+-- the admin plane owns credentials, so the table moved to
+-- 0002_admin_users.sql, classified admin-only. The cms plane's databases
+-- must have NO users table at all — the mint, the revocation handle and
+-- the setup wizard are not this plane's decisions. Databases that already
+-- applied the original 0001 keep their table (the runner tracks names,
+-- never re-runs applied files); fresh databases get the split.
 
 -- Deferred by milestone, kept honest about it: media_assets (M5 GC), and the
 -- publish-time derivations that populate preview/word_count/read_time (M3).

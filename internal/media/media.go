@@ -104,6 +104,18 @@ type Config struct {
 	CreateBucket bool // dev-only bucket bootstrap
 }
 
+// WithPrefix joins the deployment key prefix onto a content-addressed
+// key. Empty prefix returns the key UNTOUCHED (dev stays byte-identical);
+// stray leading/trailing slashes are normalized so URL composition never
+// grows "//" (an S3 key with an empty path segment is a different object).
+func WithPrefix(prefix, key string) string {
+	p := strings.Trim(prefix, "/")
+	if p == "" {
+		return key
+	}
+	return p + "/" + strings.TrimPrefix(key, "/")
+}
+
 func NewS3(ctx context.Context, c Config) (Store, string, error) {
 	if c.Bucket == "" {
 		return nil, "", fmt.Errorf("media bucket not configured")
@@ -157,12 +169,14 @@ func (s *s3Store) EnsureBucket(ctx context.Context) error {
 
 // URL composes the absolute serving URL: CDN base in prod, endpoint+bucket
 // in dev. The portal embeds the result VERBATIM (FE never constructs).
+// The key arrives ALREADY prefixed (WithPrefix is applied once at the
+// upload site) — base + "/" + key stays coherent by construction.
 func URL(cdnBase, endpoint, bucket, key string) string {
 	base := cdnBase
 	if base == "" {
 		base = strings.TrimSuffix(endpoint, "/") + "/" + bucket
 	}
-	return base + "/" + key
+	return base + "/" + strings.TrimPrefix(key, "/")
 }
 
 func orDefault(v, d string) string {

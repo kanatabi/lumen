@@ -87,3 +87,36 @@ func TestProcessStripsMetadataByRebuild(t *testing.T) {
 		t.Fatal("fixture lost its marker before the test even ran")
 	}
 }
+
+// ---- role split: LUMEN_MEDIA_PREFIX (2026-11-13) ----
+
+func TestWithPrefix(t *testing.T) {
+	const k = "media/ab/abcdef.jpg"
+	cases := []struct{ prefix, want string }{
+		{"", k}, // dev default: byte-identical to the old shape
+		{"staging", "staging/" + k},
+		{"staging/", "staging/" + k}, // trailing slash normalized (no "//" keys)
+		{"/cdn/x", "cdn/x/" + k},     // leading slash normalized likewise
+		{"tenant/a/b", "tenant/a/b/" + k},
+	}
+	for _, c := range cases {
+		if got := WithPrefix(c.prefix, k); got != c.want {
+			t.Fatalf("WithPrefix(%q, %q) = %q want %q", c.prefix, k, got, c.want)
+		}
+	}
+}
+
+func TestURLPrefixCoherence(t *testing.T) {
+	// the invariant: base + "/" + prefixed-key — the URL the portal embeds
+	// verbatim must address EXACTLY the object key the relay puts
+	key := WithPrefix("plane", "media/ab/sha.jpg")
+	if got := URL("https://cdn.example.com", "", "", key); got != "https://cdn.example.com/plane/media/ab/sha.jpg" {
+		t.Fatalf("cdn composition: %s", got)
+	}
+	if got := URL("", "http://minio:9000", "bucket", key); got != "http://minio:9000/bucket/plane/media/ab/sha.jpg" {
+		t.Fatalf("dev composition: %s", got)
+	}
+	if got := URL("", "http://minio:9000/", "bucket", WithPrefix("", "media/x.jpg")); got != "http://minio:9000/bucket/media/x.jpg" {
+		t.Fatalf("empty prefix must equal the pre-split URL: %s", got)
+	}
+}
