@@ -51,7 +51,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: kanatabi/anvil/actions/semver-release@bdf7a8941214251f9c0b0e6dba1a2bf637bb43ca # v5 epoch-ready
+      - uses: kanatabi/anvil/actions/semver-release@728231b0a8c10eab8739e75a4c5394c8f2b6386c # v6 env-model
         with:
           bump: patch
           release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
@@ -71,7 +71,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: kanatabi/anvil/actions/semver-release@bdf7a8941214251f9c0b0e6dba1a2bf637bb43ca # v5 epoch-ready
+      - uses: kanatabi/anvil/actions/semver-release@728231b0a8c10eab8739e75a4c5394c8f2b6386c # v6 env-model
         with:
           bump: minor
           release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
@@ -91,7 +91,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: kanatabi/anvil/actions/semver-release@bdf7a8941214251f9c0b0e6dba1a2bf637bb43ca # v5 epoch-ready
+      - uses: kanatabi/anvil/actions/semver-release@728231b0a8c10eab8739e75a4c5394c8f2b6386c # v6 env-model
         with:
           bump: major
           release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
