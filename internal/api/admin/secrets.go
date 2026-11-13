@@ -31,9 +31,14 @@ func (h *Handler) mountSecrets(a chi.Router) {
 
 // secretFail maps OUR secrets sentinels to statuses (the vocabulary plan:
 // 400 slug, 404 unknown-path/version, 409 every "you lost a race or the
-// namespace exists"). True means the response is written.
+// namespace exists", 403 the write lock). True means the response is written.
 func secretFail(w http.ResponseWriter, r *http.Request, err error) bool {
+	var pinned adminsvc.ErrPinned
 	switch {
+	case errors.As(err, &pinned):
+		// the write lock's wire contract — EXACT body, mellon and CI match
+		// on it: {"error":"pinned at v<N> — unpin first"}
+		httpx.WriteErr(w, http.StatusForbidden, pinned.Error())
 	case errors.Is(err, adminsvc.ErrInvalidSlug):
 		httpx.WriteErr(w, http.StatusBadRequest, "app/env must match ^[a-z][a-z0-9-]{0,31}$")
 	case errors.Is(err, adminsvc.ErrSecretNotFound):

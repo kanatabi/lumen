@@ -42,6 +42,15 @@ var (
 	ErrMirrorStale = errors.New("key-set mirror stale")
 )
 
+// ErrPinned is the WRITE LOCK (config-gate contract): while a path carries a
+// pin, the save path refuses CAS writes — a pin freezes content until an
+// explicit unpin, which is what makes "pin is a lock" more than a slogan.
+// The message is WIRE CONTRACT COPY: the relay answers 403 with it verbatim
+// ({"error":"pinned at v<N> — unpin first"}), so mellon and CI match on it.
+type ErrPinned struct{ Version int }
+
+func (e ErrPinned) Error() string { return fmt.Sprintf("pinned at v%d — unpin first", e.Version) }
+
 // ---- passthrough relay surface (existing handlers depend on these) ----
 
 func (s *Service) SecretPaths(ctx context.Context) ([]bao.Path, error) {
@@ -157,7 +166,23 @@ func (s *Service) AddEnv(ctx context.Context, app, env string) error {
 // the target is the current saved set, not a delta that would recompute as
 // empty. Value-only edits produce zero shape diffs, so siblings see no
 // writes and no version bumps at all.
+//
+// WRITE LOCK (config-gate contract): a path carrying a pin refuses saves
+// BEFORE anything is written — the pin's freeze is enforced by the only
+// writer in the house, not by convention. The lock guards the SAVE path
+// the operator targets; the mirror deliberately still reconciles a PINNED
+// sibling: the key-set invariant is structural, and silently skipping a
+// sibling would shrink the estate's shape honesty for an intent that lives
+// one env over. The resulting pin≠head surfaces at the next check-epoch as
+// cause 2 — with its own remedy.
 func (s *Service) WriteSecret(ctx context.Context, app, env string, data map[string]string, cas int) (int, error) {
+	meta, err := s.bao.Meta(ctx, app, env)
+	if err != nil {
+		return 0, err
+	}
+	if meta != nil && meta.PinnedVersion != nil {
+		return 0, ErrPinned{Version: *meta.PinnedVersion}
+	}
 	version, err := s.bao.WriteCAS(ctx, app, env, data, cas)
 	if err != nil {
 		var be *bao.Error

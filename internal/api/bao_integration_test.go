@@ -361,11 +361,28 @@ func TestBaoControlPlane(t *testing.T) {
 	if code, _ := harness.admin(http.MethodPut, "/admin/bao/itest-app/dev/pin", `{"version":0}`); code != http.StatusNotFound {
 		t.Fatalf("pin version 0: want 404, got %d", code)
 	}
+
+	// ---- WRITE LOCK (config-gate): the pin freezes saves on the REAL plane ----
+	locked, _ := json.Marshal(map[string]any{"data": map[string]string{"DB_URL": "postgres://lock-attempt"}, "cas": devV})
+	code, res = harness.admin(http.MethodPut, "/admin/bao/itest-app/dev", string(locked))
+	if code != http.StatusForbidden {
+		t.Fatalf("pinned save on the real plane: want 403, got %d %s", code, res)
+	}
+	if !bytes.Contains(res, []byte(`"error":"pinned at v2 — unpin first"`)) {
+		t.Fatalf("403 body is contract copy, got: %s", res)
+	}
+	if cv, _ := metaOf(t, harness, "itest-app", "dev"); cv != devV {
+		t.Fatalf("refused save bumped head anyway (%d, was %d)", cv, devV)
+	}
 	if code, res := harness.admin(http.MethodDelete, "/admin/bao/itest-app/dev/pin", ""); code != http.StatusNoContent {
 		t.Fatalf("unpin %d: %s", code, res)
 	}
 	if _, pin := metaOf(t, harness, "itest-app", "dev"); pin != nil {
 		t.Fatalf("unpin left intent behind: %v", pin)
+	}
+	// the lock RELEASES: the very save that took the 403 now lands
+	if code, res := harness.admin(http.MethodPut, "/admin/bao/itest-app/dev", string(locked)); code != http.StatusOK {
+		t.Fatalf("save after unpin must land: %d %s", code, res)
 	}
 	if code, _ := harness.admin(http.MethodPut, "/admin/bao/ghost-app/dev/pin", `{"version":1}`); code != http.StatusNotFound {
 		t.Fatalf("pin on missing path: want 404, got %d", code)

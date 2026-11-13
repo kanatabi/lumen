@@ -375,3 +375,77 @@ func TestPinWithoutPatchCapabilityIsLoud(t *testing.T) {
 		}
 	}
 }
+
+// ---- the WRITE LOCK (config-gate contract) ----
+
+func TestWriteLockPinnedRefusesUnpinReleases(t *testing.T) {
+	// truth table for the save path: unpinned → allowed; pinned → typed
+	// refusal with the EXACT wire copy and ZERO bytes written; unpin → the
+	// same save lands.
+	ctx := context.Background()
+	newLocked := func() (*fakeBao, *Service) {
+		f := newFake()
+		f.seed("app", "dev", map[string]string{"A": "1"})
+		s := svc(f)
+		if _, err := s.WriteSecret(ctx, "app", "dev", map[string]string{"A": "2"}, 1); err != nil {
+			t.Fatalf("unpinned save must pass (b): %v", err)
+		}
+		if err := s.Pin(ctx, "app", "dev", 1); err != nil {
+			t.Fatal(err)
+		}
+		return f, s
+	}
+
+	f, s := newLocked()
+	writes := f.writes
+	_, err := s.WriteSecret(ctx, "app", "dev", map[string]string{"A": "3"}, 2)
+	var pe ErrPinned
+	if !errors.As(err, &pe) { // (a) pinned + CAS write → typed refusal
+		t.Fatalf("pinned save: want ErrPinned, got %v", err)
+	}
+	if pe.Version != 1 || pe.Error() != "pinned at v1 — unpin first" {
+		t.Fatalf("wire copy drifted (the 403 body is contract): %+v %q", pe, err)
+	}
+	if f.writes != writes {
+		t.Fatal("a refused save must write NOTHING — no head bump, no mirror")
+	}
+
+	// (c) unpin releases the lock: the very same save lands
+	if err := s.Unpin(ctx, "app", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := s.WriteSecret(ctx, "app", "dev", map[string]string{"A": "3"}, 2); err != nil || v != 3 {
+		t.Fatalf("post-unpin save: version=%d err=%v", v, err)
+	}
+}
+
+func TestWriteLockMirrorStillReconcilesPinnedSibling(t *testing.T) {
+	// the documented scoping decision: the lock guards the SAVE path the
+	// operator targets; the key-set mirror still heals a PINNED sibling's
+	// SHAPE (structural invariant > one env's freeze). The resulting
+	// pin≠head is check-epoch cause 2 — visible, with its own remedy —
+	// never a silently shrunken estate.
+	ctx := context.Background()
+	f := newFake()
+	f.seed("app", "dev", map[string]string{"A": "1"})
+	f.seed("app", "staging", map[string]string{"A": "2"})
+	s := svc(f)
+	if err := s.Pin(ctx, "app", "staging", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteSecret(ctx, "app", "dev", map[string]string{"A": "1", "NEW": "n"}, 1); err != nil {
+		t.Fatal(err)
+	}
+	head := f.paths[key("app", "staging")].versions[1].data
+	if head["NEW"] != "" || head["A"] != "2" {
+		t.Fatalf("pinned sibling skipped the mirror: %v", head)
+	}
+	// while its own saves stay locked
+	var pe ErrPinned
+	if _, err := s.WriteSecret(ctx, "app", "staging", map[string]string{"A": "9"}, 2); !errors.As(err, &pe) {
+		t.Fatalf("pinned env self-save: want ErrPinned, got %v", err)
+	}
+	if pe.Version != 1 {
+		t.Fatalf("lock must name the pin, not the head: %+v", pe)
+	}
+}
