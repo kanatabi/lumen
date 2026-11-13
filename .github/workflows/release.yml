@@ -61,6 +61,35 @@ jobs:
           version-arg: ${{ inputs.tag || github.ref_name }}
           alias: latest
 
+  # ---- FAIL-CLOSED GATE AUDIT (incident 2026-11-13: v3.0.0/v2.0.0 fired
+  # while the deploy-* environments did not exist — GitHub AUTO-CREATES a
+  # referenced-but-missing environment UNPROTECTED, so the park silently
+  # no-oped and five bump PRs opened with no deploy decision. A protected
+  # environment is not decoration, it IS the gate: assert it exists and
+  # carries required reviewers BEFORE any deploy job may run. Absence of
+  # config must be RED, never an implicit yes.
+  gate-audit:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      environments: read
+    steps:
+      - name: every chain parks on a PROTECTED environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHAINS: deploy-foundation deploy-staging deploy-production
+        run: |
+          set -uo pipefail
+          fail=0
+          for E in $CHAINS; do
+            JSON=$(gh api "repos/$GITHUB_REPOSITORY/environments/$E" 2>/dev/null) \
+              || { echo "::error::environment '$E' does not exist — referencing a missing one AUTO-CREATES it UNPROTECTED (Settings -> Environments); the approval would silently never park"; fail=1; continue; }
+            echo "$JSON" | jq -e '.protection_rules | map(.type) | index("required_reviewers")' >/dev/null \
+              || { echo "::error::environment '$E' exists but has NO required reviewers — deploys would NOT park"; fail=1; }
+          done
+          exit $fail
+
   # ================= foundation chain (the shared control plane) =========
   deploy-plan-foundation:
     needs: build
@@ -77,7 +106,7 @@ jobs:
           config-epoch: ${{ inputs.env == 'foundation' && inputs.config-epoch || '' }}
 
   deploy-foundation:
-    needs: [build, deploy-plan-foundation]
+    needs: [build, gate-audit, deploy-plan-foundation]
     if: github.event_name == 'push' || inputs.env == 'all' || inputs.env == 'foundation'
     runs-on: ubuntu-latest
     environment: deploy-foundation
@@ -107,7 +136,7 @@ jobs:
           config-epoch: ${{ inputs.env == 'staging' && inputs.config-epoch || '' }}
 
   deploy-staging:
-    needs: [build, deploy-plan-staging]
+    needs: [build, gate-audit, deploy-plan-staging]
     if: github.event_name == 'push' || inputs.env == 'all' || inputs.env == 'staging'
     runs-on: ubuntu-latest
     environment: deploy-staging
@@ -137,7 +166,7 @@ jobs:
           config-epoch: ${{ inputs.env == 'production' && inputs.config-epoch || '' }}
 
   deploy-production:
-    needs: [build, deploy-plan-production]
+    needs: [build, gate-audit, deploy-plan-production]
     if: github.event_name == 'push' || inputs.env == 'all' || inputs.env == 'production'
     runs-on: ubuntu-latest
     environment: deploy-production
