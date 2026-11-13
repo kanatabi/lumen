@@ -5,6 +5,7 @@
 //	lumen worker     consumes index jobs only; serves no HTTP
 //	lumen user       bootstrap/upsert an admin account (argon2id)
 //	lumen driftcheck compare staging/production secret key sets (CI verb)
+//	lumen config     config-plane gates (check-epoch: dispatch vs vault head/pin)
 //
 // One repo, separable processes: when the cluster split comes (vortex phase)
 // the images deploy `server` (edge) and `worker` (data pool) independently;
@@ -46,6 +47,7 @@ func newRootCommand() *cobra.Command {
 		allCommand(),
 		userCommand(),
 		driftcheckCommand(),
+		configCommand(),
 	)
 	return root
 }
