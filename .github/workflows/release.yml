@@ -17,6 +17,11 @@ on:
         description: existing v-tag to build + deploy (redeploy / rollback)
         required: true
         type: string
+      config-epoch:
+        description: optional — flip the config epoch pair without a new image (number from the portal matrix); leave empty for normal image releases
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -32,7 +37,7 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref_name }}
       - name: publish-image
-        uses: kanatabi/anvil/actions/publish-image@696fc4901165d4cd04cd42a2a54ede74c9ed97f4 # v4 version truth+settle
+        uses: kanatabi/anvil/actions/publish-image@bdf7a8941214251f9c0b0e6dba1a2bf637bb43ca # v5 epoch-ready
         with:
           app: lumen
           tag: ${{ inputs.tag || github.ref_name }}
@@ -44,11 +49,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: plan the bump (evidence only)
-        uses: kanatabi/anvil/actions/deploy-plan@696fc4901165d4cd04cd42a2a54ede74c9ed97f4 # v4 version truth+settle
+        uses: kanatabi/anvil/actions/deploy-plan@bdf7a8941214251f9c0b0e6dba1a2bf637bb43ca # v5 epoch-ready
         with:
           app: lumen
           tag: ${{ inputs.tag || github.ref_name }}
           vortex-bot-pat: ${{ secrets.VORTEX_BOT_PAT }}
+          config-epoch: ${{ inputs.config-epoch }}
 
   deploy:
     needs: [build, deploy-plan]
@@ -56,8 +62,9 @@ jobs:
     environment: deploy
     steps:
       - name: open the bump PR (human-approved)
-        uses: kanatabi/anvil/actions/deploy-bump@696fc4901165d4cd04cd42a2a54ede74c9ed97f4 # v4 version truth+settle
+        uses: kanatabi/anvil/actions/deploy-bump@bdf7a8941214251f9c0b0e6dba1a2bf637bb43ca # v5 epoch-ready
         with:
           app: lumen
           tag: ${{ inputs.tag || github.ref_name }}
           vortex-bot-pat: ${{ secrets.VORTEX_BOT_PAT }}
+          config-epoch: ${{ inputs.config-epoch }}
