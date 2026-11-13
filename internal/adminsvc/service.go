@@ -43,6 +43,7 @@ type Service struct {
 	mediaEndpoint string
 	mediaBucket   string
 	mediaCDNBase  string
+	mediaPrefix   string // LUMEN_MEDIA_PREFIX — applied once in UploadPhoto (§5)
 
 	bao baoAPI // concrete: *bao.Client; tests: the fake in secrets_test.go
 }
@@ -54,6 +55,12 @@ func New(st *store.PG, q *queue.Client, eng *search.Service, jwtSecret string, l
 func (s *Service) EnableMedia(store media.Store, endpoint, bucket, cdnBase string) {
 	s.media, s.mediaEndpoint, s.mediaBucket, s.mediaCDNBase = store, endpoint, bucket, cdnBase
 }
+
+// SetMediaPrefix scopes every uploaded object key (LUMEN_MEDIA_PREFIX,
+// role split 2026-11-13): the prefix is applied once at the upload site,
+// so puts, returned URLs and the stored src/ledger stay coherent. Empty
+// (the default) keeps dev byte-identical.
+func (s *Service) SetMediaPrefix(prefix string) { s.mediaPrefix = prefix }
 
 func (s *Service) EnableBao(client *bao.Client) { s.bao = client }
 

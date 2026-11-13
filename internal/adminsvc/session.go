@@ -74,6 +74,18 @@ func (s *Service) VerifyBearer(ctx context.Context, bearer string) (Principal, e
 	return Principal{Username: claims.Subject, Role: auth.Role, MustChange: auth.MustChange}, nil
 }
 
+// Verify is the introspection verdict the admin plane owes the other
+// planes (role-split ruling 2026-11-13): the SAME two-half check as every
+// local request — pinned signature AND the live token_version row — but
+// spoken as its own endpoint so a plane without users/JWT knowledge can
+// ask. The cms plane caches the answer ~30 s (internal/authz); revocation
+// propagates within that window plus the 12 h TTL semantics of §8.
+// Errors are the transport's to map: invalid → 401, DB failure → the
+// caller must NOT answer "valid".
+func (s *Service) Verify(ctx context.Context, bearer string) (Principal, error) {
+	return s.VerifyBearer(ctx, bearer)
+}
+
 // Revoke is logout: bump the version so every outstanding bearer dies.
 func (s *Service) Revoke(ctx context.Context, bearer string) (string, error) {
 	token, _ := strings.CutPrefix(bearer, "Bearer ")

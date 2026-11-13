@@ -58,9 +58,13 @@ func (s *Service) DeletePhoto(ctx context.Context, id int64) error {
 }
 
 // UploadPhoto is the §5 relay as a use case: probe (decode-and-REBUILD —
-// EXIF dies by construction), content-addressed PUT BEFORE anything is
-// public, then row + GC ledger + index job in one transaction. The handler
-// keeps the HTTP shape (multipart, MaxBytesReader); everything else is here.
+// EXIF dies by construction), content-addressed key SCOPED by the config
+// media prefix (LUMEN_MEDIA_PREFIX: applied ONCE here so the object put,
+// the returned URL and the stored row all carry the same prefixed key —
+// base+prefix+key stays coherent by construction), PUT BEFORE anything
+// is public, then row + GC ledger + index job in one transaction. The
+// handler keeps the HTTP shape (multipart, MaxBytesReader); everything
+// else is here.
 func (s *Service) UploadPhoto(ctx context.Context, filename string, raw []byte) (store.AdminPhoto, error) {
 	if s.media == nil {
 		return store.AdminPhoto{}, ErrNoMediaStore
@@ -69,6 +73,7 @@ func (s *Service) UploadPhoto(ctx context.Context, filename string, raw []byte) 
 	if err != nil {
 		return store.AdminPhoto{}, &UploadRejected{Err: err}
 	}
+	processed.Key = media.WithPrefix(s.mediaPrefix, processed.Key)
 	if err := s.media.EnsureBucket(ctx); err != nil {
 		return store.AdminPhoto{}, err
 	}

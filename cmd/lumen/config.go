@@ -15,11 +15,14 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/kanatabi/lumen/internal/adminsvc"
 	"github.com/kanatabi/lumen/internal/bao"
+	"github.com/kanatabi/lumen/internal/config"
+	"github.com/kanatabi/lumen/internal/role"
 )
 
 // The two causes, verbatim from the contract ("<cause>: <fix>" — cause 1
@@ -32,10 +35,53 @@ const (
 func configCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "config-plane gates over the vault (read-only CI verbs)",
+		Short: "config-plane verbs (gates over the vault; bindings surface)",
 	}
-	cmd.AddCommand(checkEpochCommand())
+	cmd.AddCommand(checkEpochCommand(), configKeysCommand())
 	return cmd
+}
+
+// configKeysCommand is the machine-readable bindings surface the
+// epoch-agent P3 reads: the LUMEN_* env NAMES the given role actually
+// binds, printed one per line, sorted — derived from the config layer's
+// OWN binding table (never a copy-pasted list; the table and the loader
+// are the same data). PORT (the non-LUMEN workspace alias) is documented
+// in env.yaml.sample and deliberately absent here: the contract of this
+// output is the LUMEN_* family.
+func configKeysCommand() *cobra.Command {
+	var roleFlag string
+	cmd := &cobra.Command{
+		Use:   "keys",
+		Short: "print the LUMEN_* env names a process role binds (from the config layer itself)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if roleFlag == "" {
+				roleFlag = os.Getenv("LUMEN_ROLE")
+			}
+			out, err := configKeysOutput(roleFlag)
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(cmd.OutOrStdout(), out)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&roleFlag, "role", "", `plane: "admin" | "cms" | "all" (default: LUMEN_ROLE, else legacy "all")`)
+	return cmd
+}
+
+// configKeysOutput is the pure render — the test proves stability
+// without process env games.
+func configKeysOutput(roleFlag string) (string, error) {
+	rt, err := role.Parse(roleFlag)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, k := range config.EnvKeys(rt) {
+		b.WriteString(k)
+		b.WriteString("\n")
+	}
+	return b.String(), nil
 }
 
 func checkEpochCommand() *cobra.Command {

@@ -18,6 +18,12 @@ import (
 	meili "github.com/meilisearch/meilisearch-go"
 )
 
+// Index uid DEFAULTS. The role split made index names config —
+// LUMEN_MEILI_INDEX_POSTS / LUMEN_MEILI_INDEX_PHOTOS (empty = these), so
+// dev and the planes can live in different engine deployments with
+// separate index spaces. "tags" stays a constant by ruling: the config
+// surface enumerates posts/photos only; the vocabulary index is the one
+// shared engine story.
 const (
 	IndexPosts  = "posts"
 	IndexPhotos = "photos"
@@ -77,18 +83,49 @@ func DayInt(date string) int {
 }
 
 type Service struct {
-	client meili.ServiceManager
+	client      meili.ServiceManager
+	postsIndex  string // from config (role split) — Ensure/index/query all honor it
+	photosIndex string
 }
 
+// New builds the engine client with the DEFAULT index uids (the offline
+// twin wiring and any caller that has no config layer).
 func New(url, key string) *Service {
-	return &Service{client: meili.New(url, meili.WithAPIKey(key))}
+	return NewWithIndexes(url, key, "", "")
 }
 
-// Ensure bootstraps both indexes idempotently: create-if-missing, then
+// NewWithIndexes is the CONFIGURED constructor: empty names fall back to
+// the constants, so the dev loop is byte-identical when the keys are unset.
+func NewWithIndexes(url, key, posts, photos string) *Service {
+	return &Service{
+		client:      meili.New(url, meili.WithAPIKey(key)),
+		postsIndex:  orDefault(posts, IndexPosts),
+		photosIndex: orDefault(photos, IndexPhotos),
+	}
+}
+
+func orDefault(v, d string) string {
+	if v != "" {
+		return v
+	}
+	return d
+}
+
+// Ensure bootstraps the indexes idempotently: create-if-missing, then
 // settings every boot (harmless re-application is the honest way to keep
-// dev-recreated and long-lived engines identical).
+// dev-recreated and long-lived engines identical). The NAMES ride config —
+// the worker/server bootstrap and the seed all converge here.
 func (s *Service) Ensure(ctx context.Context) error {
-	for _, uid := range []string{IndexPosts, IndexPhotos, IndexTags} {
+	indexes := []struct {
+		uid      string
+		settings *meili.Settings
+	}{
+		{s.postsIndex, postsSettings()},
+		{s.photosIndex, photosSettings()},
+		{IndexTags, tagsSettings()},
+	}
+	for _, ix := range indexes {
+		uid := ix.uid
 		if _, err := s.client.GetIndex(uid); err != nil {
 			if _, err := s.client.CreateIndex(&meili.IndexConfig{Uid: uid, PrimaryKey: "id"}); err != nil &&
 				!strings.Contains(err.Error(), "already_exists") {
@@ -98,14 +135,7 @@ func (s *Service) Ensure(ctx context.Context) error {
 				return err
 			}
 		}
-		settings := postsSettings()
-		switch uid {
-		case IndexPhotos:
-			settings = photosSettings()
-		case IndexTags:
-			settings = tagsSettings()
-		}
-		task, err := s.client.Index(uid).UpdateSettingsWithContext(ctx, settings)
+		task, err := s.client.Index(uid).UpdateSettingsWithContext(ctx, ix.settings)
 		if err != nil {
 			return fmt.Errorf("settings %s: %w", uid, err)
 		}
@@ -187,7 +217,7 @@ func (s *Service) IndexPosts(ctx context.Context, docs []PostDoc) error {
 	if len(docs) == 0 {
 		return nil
 	}
-	task, err := s.client.Index(IndexPosts).UpdateDocumentsWithContext(ctx, docs, primaryKey())
+	task, err := s.client.Index(s.postsIndex).UpdateDocumentsWithContext(ctx, docs, primaryKey())
 	if err != nil {
 		return err
 	}
@@ -198,7 +228,7 @@ func (s *Service) DeletePosts(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	task, err := s.client.Index(IndexPosts).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
+	task, err := s.client.Index(s.postsIndex).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
 	if err != nil {
 		return err
 	}
@@ -209,7 +239,7 @@ func (s *Service) IndexPhotos(ctx context.Context, docs []PhotoDoc) error {
 	if len(docs) == 0 {
 		return nil
 	}
-	task, err := s.client.Index(IndexPhotos).UpdateDocumentsWithContext(ctx, docs, primaryKey())
+	task, err := s.client.Index(s.photosIndex).UpdateDocumentsWithContext(ctx, docs, primaryKey())
 	if err != nil {
 		return err
 	}
@@ -220,7 +250,7 @@ func (s *Service) DeletePhotos(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	task, err := s.client.Index(IndexPhotos).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
+	task, err := s.client.Index(s.photosIndex).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,11 @@
 // `make dev` and the integration tests get the SAME corpus every run. In M3 the
 // publish-time derivations (preview/read_time/word_count/tag counts) move under
 // the publish transaction; the seed remains the deterministic dev/CI loader.
+//
+// Role split (2026-11-13): the SEED TARGETS THE CMS PLANE — content tables,
+// queue, engine indexes. It migrates the role's subset (legacy unset = "all"
+// keeps the dev loop identical) and REFUSES LUMEN_ROLE=admin, whose database
+// holds no content tables to seed.
 package main
 
 import (
@@ -18,6 +23,7 @@ import (
 
 	"github.com/kanatabi/lumen/internal/domain"
 	"github.com/kanatabi/lumen/internal/queue"
+	"github.com/kanatabi/lumen/internal/role"
 	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/store"
 	"github.com/kanatabi/lumen/internal/testutil"
@@ -30,6 +36,13 @@ func main() {
 	if *dbURL == "" {
 		log.Fatal("-db or LUMEN_DB_URL required")
 	}
+	rt, err := role.Parse(os.Getenv("LUMEN_ROLE"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if rt == role.Admin {
+		log.Fatal("seed targets the cms plane (content corpus); LUMEN_ROLE=admin databases hold no content tables — bootstrap users with `lumen user` and the setup wizard instead")
+	}
 	ctx := context.Background()
 	pool, err := store.NewPool(ctx, *dbURL)
 	if err != nil {
@@ -37,7 +50,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	if err := store.Migrate(ctx, pool); err != nil {
+	if _, err := store.MigrateForRole(ctx, pool, rt); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
 	if err := queue.MigrateUp(ctx, pool); err != nil {
@@ -63,8 +76,11 @@ func main() {
 	}
 
 	// index everything through the REAL pipeline (engine config from env;
-	// the dev loop must exercise what production runs, not a shortcut)
-	searchEngine := search.New(mustEnv("LUMEN_MEILI_URL"), mustEnv("LUMEN_MEILI_KEY"))
+	// the dev loop must exercise what production runs, not a shortcut) —
+	// INCLUDING the configured index names (role split: seed converges the
+	// same uids the server/worker bootstrap)
+	searchEngine := search.NewWithIndexes(mustEnv("LUMEN_MEILI_URL"), mustEnv("LUMEN_MEILI_KEY"),
+		envOr("LUMEN_MEILI_INDEX_POSTS", search.IndexPosts), envOr("LUMEN_MEILI_INDEX_PHOTOS", search.IndexPhotos))
 	if err := searchEngine.Ensure(ctx); err != nil {
 		log.Fatalf("meili bootstrap: %v", err)
 	}
@@ -120,6 +136,14 @@ func mustEnv(k string) string {
 		log.Fatalf("env %s required for indexing (compose dev: LUMEN_MEILI_URL=http://localhost:7700)", k)
 	}
 	return v
+}
+
+// envOr reads an optional env with a documented default (index names).
+func envOr(k, d string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return d
 }
 
 func loadFixture(ctx context.Context, pool *pgxpool.Pool, file string) error {

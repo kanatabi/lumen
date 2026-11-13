@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kanatabi/lumen/internal/role"
 	"github.com/kanatabi/lumen/internal/session"
 	"github.com/kanatabi/lumen/internal/store"
 )
@@ -15,10 +16,16 @@ import (
 // the password arrives via LUMEN_PASSWORD — argv would leak it into shell
 // history and process listings; the environment is the honest local
 // channel. Upsert keeps token_version stable across password updates.
+//
+// Role split (2026-11-13): the users table is the ADMIN plane's, so this
+// verb targets it — its inline migration applies the ADMIN subset
+// (0002/0007), never the content tables. Point --db (or LUMEN_DB_URL) at
+// lumen_admin. On legacy dev databases (which carry everything) the
+// subset is a recorded no-op and behavior is unchanged.
 func userCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "user",
-		Short: "bootstrap/upsert an admin account (argon2id passhash in the DB)",
+		Short: "bootstrap/upsert an admin account (argon2id passhash in the ADMIN-plane DB)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			username, _ := cmd.Flags().GetString("username")
 			dbURL, _ := cmd.Flags().GetString("db")
@@ -41,7 +48,7 @@ func userCommand() *cobra.Command {
 				return err
 			}
 			defer pool.Close()
-			if err := store.Migrate(context.Background(), pool); err != nil {
+			if _, err := store.MigrateForRole(context.Background(), pool, role.Admin); err != nil {
 				return err
 			}
 			if err := store.NewPG(pool).UpsertUser(cmd.Context(), username, hash); err != nil {

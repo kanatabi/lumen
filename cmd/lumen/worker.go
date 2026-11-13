@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os/signal"
 	"syscall"
@@ -10,12 +11,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// workerCommand: the index-queue consumer process. No HTTP, no admin deps,
+// workerCommand: the index-queue consumer process — a CMS-plane verb
+// (role split 2026-11-13: the admin plane has no queue tables in its
+// database by classification, so `worker` with LUMEN_ROLE=admin is a
+// deployment mistake and refuses at boot, not at first job). No HTTP,
 // no session secret — its whole scope is: keep the projection converging.
 func workerCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "worker",
-		Short: "consume the index queue only; no HTTP server",
+		Short: "consume the index queue only (cms plane); no HTTP server",
 		RunE:  func(*cobra.Command, []string) error { return runWorker() },
 	}
 }
@@ -29,6 +33,9 @@ func runWorker() error {
 		return err
 	}
 	defer deps.Close()
+	if deps.queueClient == nil {
+		return errors.New("worker: no queue on the admin plane (LUMEN_ROLE=admin) — index jobs are the cms plane's projection story")
+	}
 	if err := startConsumers(deps); err != nil {
 		return err
 	}

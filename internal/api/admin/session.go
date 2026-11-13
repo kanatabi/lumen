@@ -54,3 +54,33 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	slog.Info("session.revoke", "user", subject)
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// verifySession is POST /admin/session/verify — the introspection door of
+// the role split (the admin plane's answer to "is this bearer alive, and
+// who is it"). WIRE CONTRACT (mellon/CI agents match verbatim):
+//
+//	POST /admin/session/verify        Authorization: Bearer <token> (as-is)
+//	                                  (empty body; nothing else consulted)
+//	200 {"username": string, "role": "admin"|"editor", "mustChange": bool}
+//	401 {"error": "invalid token"}   (bad signature/expiry/revoked/unknown user)
+//	500 {"error": "internal error"}  (authority unreadable — never "valid")
+//
+// Registered OUTSIDE the auth group on purpose: the bearer being asked
+// about IS the request's only credential. Trust: ClusterIP-only path
+// (INFRA §2 — lumen has no public ingress); the admin plane holds the
+// real auth decision.
+func (h *Handler) verifySession(w http.ResponseWriter, r *http.Request) {
+	p, err := h.svc.Verify(r.Context(), r.Header.Get("Authorization"))
+	switch {
+	case err == nil:
+		slog.Info("session.verify", "user", p.Username)
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"username": p.Username, "role": p.Role, "mustChange": p.MustChange,
+		})
+	case errors.Is(err, adminsvc.ErrInvalidCredentials):
+		httpx.WriteErr(w, http.StatusUnauthorized, "invalid token")
+	default:
+		slog.Error("session.verify.error", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "internal error")
+	}
+}

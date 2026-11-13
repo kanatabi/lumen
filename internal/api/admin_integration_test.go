@@ -33,6 +33,7 @@ import (
 	"github.com/kanatabi/lumen/internal/api/public"
 	"github.com/kanatabi/lumen/internal/media"
 	"github.com/kanatabi/lumen/internal/queue"
+	"github.com/kanatabi/lumen/internal/role"
 	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/service"
 	"github.com/kanatabi/lumen/internal/session"
@@ -128,7 +129,7 @@ func newAdminHarness(t *testing.T) *adminHarness {
 
 	adminSvc := adminsvc.New(pg, queueClient, searchEngine, secret, throttle.New(time.Minute))
 	build := func() http.Handler {
-		return api.NewRouter(public.New(service.New(pg, searchEngine), searchEngine), admin.New(adminSvc))
+		return api.NewRouter(public.New(service.New(pg, searchEngine), searchEngine), admin.New(adminSvc), role.PlanesAll)
 	}
 	// media relay: an EMBEDDED S3-protocol server (gofakes3 + s3mem) — a
 	// real SigV4 endpoint, in-process and deterministic; no registry luck.
@@ -573,7 +574,7 @@ func TestAdminLifecycle(t *testing.T) {
 	t.Run("throttle starves credential stuffing", func(t *testing.T) {
 		lim := throttle.New(time.Minute)
 		throttleSvc := adminsvc.New(store.NewPG(harness.pool), nil, nil, "x", lim)
-		h := api.NewRouter(public.New(service.New(nil, nil), nil), admin.New(throttleSvc))
+		h := api.NewRouter(public.New(service.New(nil, nil), nil), admin.New(throttleSvc), role.PlaneAdmin)
 		for i := 0; i < 12; i++ {
 			req := httptest.NewRequest(http.MethodPost, "/admin/session",
 				strings.NewReader(`{"username":"victim","password":"guessed"}`))

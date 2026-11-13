@@ -29,7 +29,7 @@ func (s *Service) AdminPostsByQuery(ctx context.Context, q domain.ListQuery) (Li
 	if sort := postSort(q.Sort, q.Q); len(sort) > 0 {
 		searchRequest.Sort = sort
 	}
-	res, err := s.client.Index(IndexPosts).Search(q.Q, searchRequest)
+	res, err := s.client.Index(s.postsIndex).Search(q.Q, searchRequest)
 	if err != nil {
 		return ListPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -76,7 +76,7 @@ func (s *Service) AdminPhotosByQuery(ctx context.Context, pq PhotoQuery) (PhotoP
 		Offset:               int64(max(pq.Offset, 0)),
 		Limit:                int64(max(pq.Limit, 1)),
 	}
-	res, err := s.client.Index(IndexPhotos).Search(pq.Q, searchRequest)
+	res, err := s.client.Index(s.photosIndex).Search(pq.Q, searchRequest)
 	if err != nil {
 		return PhotoPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}

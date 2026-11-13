@@ -71,7 +71,7 @@ func (s *Service) SuggestPosts(ctx context.Context, needle string, limit int) (L
 		AttributesToRetrieve: []string{"slug"},
 		AttributesToSearchOn: []string{"title", "preview"}, // the launcher's narrower field set (§1)
 	}
-	res, err := s.client.Index(IndexPosts).Search(needle, searchRequest)
+	res, err := s.client.Index(s.postsIndex).Search(needle, searchRequest)
 	if err != nil {
 		return ListPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -79,7 +79,7 @@ func (s *Service) SuggestPosts(ctx context.Context, needle string, limit int) (L
 }
 
 func (s *Service) searchPosts(ctx context.Context, q string, searchRequest *meili.SearchRequest) (ListPage, error) {
-	res, err := s.client.Index(IndexPosts).Search(q, searchRequest)
+	res, err := s.client.Index(s.postsIndex).Search(q, searchRequest)
 	if err != nil {
 		return ListPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -185,7 +185,7 @@ func (s *Service) ListPhotos(ctx context.Context, limit int) (PhotoPage, error) 
 	if limit <= 0 {
 		searchRequest.Limit = postLimitWhenAbsent
 	}
-	res, err := s.client.Index(IndexPhotos).Search("", searchRequest)
+	res, err := s.client.Index(s.photosIndex).Search("", searchRequest)
 	if err != nil {
 		return PhotoPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
