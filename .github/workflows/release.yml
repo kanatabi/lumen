@@ -54,7 +54,7 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref_name }}
       - name: publish-image
-        uses: kanatabi/anvil/actions/publish-image@728231b0a8c10eab8739e75a4c5394c8f2b6386c # v6 env-model
+        uses: kanatabi/anvil/actions/publish-image@829fa28eeb50eaf46a2d8167555236be0f232366 # wave assertions + fence/bot fixes
         with:
           app: lumen
           tag: ${{ inputs.tag || github.ref_name }}
@@ -76,7 +76,12 @@ jobs:
     steps:
       - name: every chain parks on a PROTECTED environment
         env:
-          GH_TOKEN: ${{ github.token }}
+          # environments API needs Administration: read — the default
+          # GITHUB_TOKEN gets a 200-with-REDACTED body (no protection_rules),
+          # which the check below would misread as "no reviewers" (walked
+          # 2026-11-14). ENV_AUDIT_PAT = fine-grained PAT, Administration
+          # read-only, on this repo.
+          GH_TOKEN: ${{ secrets.ENV_AUDIT_PAT }}
           CHAINS: deploy-foundation deploy-staging deploy-production
         run: |
           set -uo pipefail
@@ -96,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: plan the bump (evidence only)
-        uses: kanatabi/anvil/actions/deploy-plan@728231b0a8c10eab8739e75a4c5394c8f2b6386c # v6 env-model
+        uses: kanatabi/anvil/actions/publish-image@829fa28eeb50eaf46a2d8167555236be0f232366 # wave assertions + fence/bot fixes
         with:
           app: lumen
           env: foundation
@@ -111,7 +116,7 @@ jobs:
     environment: deploy-foundation
     steps:
       - name: open the bump PR (human-approved)
-        uses: kanatabi/anvil/actions/deploy-bump@728231b0a8c10eab8739e75a4c5394c8f2b6386c # v6 env-model
+        uses: kanatabi/anvil/actions/publish-image@829fa28eeb50eaf46a2d8167555236be0f232366 # wave assertions + fence/bot fixes
         with:
           app: lumen
           env: foundation
@@ -126,7 +131,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: plan the bump (evidence only)
-        uses: kanatabi/anvil/actions/deploy-plan@728231b0a8c10eab8739e75a4c5394c8f2b6386c # v6 env-model
+        uses: kanatabi/anvil/actions/publish-image@829fa28eeb50eaf46a2d8167555236be0f232366 # wave assertions + fence/bot fixes
         with:
           app: lumen
           env: staging
@@ -141,7 +146,7 @@ jobs:
     environment: deploy-staging
     steps:
       - name: open the bump PR (human-approved)
-        uses: kanatabi/anvil/actions/deploy-bump@728231b0a8c10eab8739e75a4c5394c8f2b6386c # v6 env-model
+        uses: kanatabi/anvil/actions/publish-image@829fa28eeb50eaf46a2d8167555236be0f232366 # wave assertions + fence/bot fixes
         with:
           app: lumen
           env: staging
@@ -156,7 +161,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: plan the bump (evidence only)
-        uses: kanatabi/anvil/actions/deploy-plan@728231b0a8c10eab8739e75a4c5394c8f2b6386c # v6 env-model
+        uses: kanatabi/anvil/actions/publish-image@829fa28eeb50eaf46a2d8167555236be0f232366 # wave assertions + fence/bot fixes
         with:
           app: lumen
           env: production
@@ -171,7 +176,7 @@ jobs:
     environment: deploy-production
     steps:
       - name: open the bump PR (human-approved)
-        uses: kanatabi/anvil/actions/deploy-bump@728231b0a8c10eab8739e75a4c5394c8f2b6386c # v6 env-model
+        uses: kanatabi/anvil/actions/publish-image@829fa28eeb50eaf46a2d8167555236be0f232366 # wave assertions + fence/bot fixes
         with:
           app: lumen
           env: production
