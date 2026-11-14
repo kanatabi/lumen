@@ -73,7 +73,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      environments: read
     steps:
       - name: every chain parks on a PROTECTED environment
         env:
