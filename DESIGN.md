@@ -409,7 +409,7 @@ explicit** subset of OpenBao KV v2 — per `INFRA_ARCHITECTURE.md` §5.5:
   never overwrites), and metadata PATCH (`custom_metadata` — the pin's home).
   Nothing else. No `sys/`, no unauthenticated paths, no destroy/delete surface
   (D5: app/env teardown stays an operator drill, not a UI button).
-- **Control plane (PLAN-SECRETS-CONTROL.md): apps are DATA.** Namespaces are
+- **Control plane ([secrets-control-plane.md](https://github.com/kanatabi/omicron/blob/main/context-knowledge/decisions/secrets-control-plane.md), the vault decision record): apps are DATA.** Namespaces are
   opaque validated slugs (`^[a-z][a-z0-9-]{1,31}$`) — no allowlists, no
   per-app logic anywhere. Onboarding seeds the trio `dev/staging/production`
   (a DEFAULT, not a schema — add-env extends an app, seeded to the canonical
