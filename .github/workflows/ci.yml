@@ -13,8 +13,20 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: false
+  # NEVER let a pipeline queue behind an open one (walked 2026-11-14: the
+  # shared ci-refs/heads/main group made every new release cycle wait until
+  # the previous cycle's still-open run was cancelled by hand — its leftover
+  # release-* parks kept it open forever). Main pushes get a UNIQUE group
+  # (github.sha): runs never queue. PR runs keep a per-PR group with
+  # cancel-in-progress: a new commit supersedes its OWN run's older revision
+  # — same pipeline, not a rival one. Parks on the release-*/deploy-*
+  # environments COEXIST by GitHub design (environments don't serialize
+  # deployments): whichever chain the human approves continues — owner
+  # ruling 2026-11-14, "whichever pipeline the developer wants to continue
+  # is their call" — and GitHub's own 30-day park auto-fail is the only
+  # janitor. No cancelling, no reaping, no machine judgment.
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.ref) || format('ci-push-{0}', github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   gates:
@@ -51,7 +63,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: kanatabi/anvil/actions/semver-release@728231b0a8c10eab8739e75a4c5394c8f2b6386c # v6 env-model
+      - uses: kanatabi/anvil/actions/semver-release@a8f1d119e728cce115c20fe7425245c9a1e40d1c # stateless validator era (re-pinned from the pre-bases-rename 728231b0 — the same stale SHA the release.yml incident had)
         with:
           bump: patch
           release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
@@ -71,7 +83,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: kanatabi/anvil/actions/semver-release@728231b0a8c10eab8739e75a4c5394c8f2b6386c # v6 env-model
+      - uses: kanatabi/anvil/actions/semver-release@a8f1d119e728cce115c20fe7425245c9a1e40d1c # stateless validator era (re-pinned from the pre-bases-rename 728231b0 — the same stale SHA the release.yml incident had)
         with:
           bump: minor
           release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
@@ -91,7 +103,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: kanatabi/anvil/actions/semver-release@728231b0a8c10eab8739e75a4c5394c8f2b6386c # v6 env-model
+      - uses: kanatabi/anvil/actions/semver-release@a8f1d119e728cce115c20fe7425245c9a1e40d1c # stateless validator era (re-pinned from the pre-bases-rename 728231b0 — the same stale SHA the release.yml incident had)
         with:
           bump: major
           release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
