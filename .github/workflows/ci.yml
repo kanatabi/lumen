@@ -63,7 +63,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: kanatabi/anvil/actions/semver-release@a8f1d119e728cce115c20fe7425245c9a1e40d1c # stateless validator era (re-pinned from the pre-bases-rename 728231b0 — the same stale SHA the release.yml incident had)
+      - uses: kanatabi/anvil/actions/semver-release@6e210f5c232a17273d59da7766fbb9f5d2d25d56 # guarded push/create + optional-tag dispatch
         with:
           bump: patch
           release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
@@ -83,7 +83,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: kanatabi/anvil/actions/semver-release@a8f1d119e728cce115c20fe7425245c9a1e40d1c # stateless validator era (re-pinned from the pre-bases-rename 728231b0 — the same stale SHA the release.yml incident had)
+      - uses: kanatabi/anvil/actions/semver-release@6e210f5c232a17273d59da7766fbb9f5d2d25d56 # guarded push/create + optional-tag dispatch
         with:
           bump: minor
           release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
@@ -103,7 +103,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: kanatabi/anvil/actions/semver-release@a8f1d119e728cce115c20fe7425245c9a1e40d1c # stateless validator era (re-pinned from the pre-bases-rename 728231b0 — the same stale SHA the release.yml incident had)
+      - uses: kanatabi/anvil/actions/semver-release@6e210f5c232a17273d59da7766fbb9f5d2d25d56 # guarded push/create + optional-tag dispatch
         with:
           bump: major
           release-bot-pat: ${{ secrets.RELEASE_BOT_PAT }}
