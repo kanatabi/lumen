@@ -25,9 +25,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: existing v-tag to build + deploy (redeploy / rollback)
-        required: true
+        description: >-
+          existing v-tag to build + deploy (redeploy / rollback). OPTIONAL
+          when you dispatch FROM the tag's ref (the ref name provides it —
+          leave the box empty); REQUIRED when dispatching from a branch
+          like main.
+        required: false
         type: string
+        default: ""
       env:
         description: which environment chain(s) to run
         required: true
@@ -50,11 +55,24 @@ jobs:
       contents: read
       packages: write
     steps:
+      # Fail-closed tag shape guard (walked 2026-11-14): the tag input went
+      # OPTIONAL for dispatch-from-tag UX — the box may now be empty, so a
+      # dispatch from MAIN with an empty box would otherwise resolve to
+      # 'main' and deploy a branch name. Only a released vX.Y.Z proceeds:
+      # tag push -> ref_name IS the tag (passes); dispatch from the tag ref
+      # -> ref_name IS the tag (passes, box empty); typed tag wins anywhere.
+      - name: released v-tag or nothing
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          case "$TAG" in
+            v*.*.*) echo "deploying $TAG" ;;
+            *) echo "::error::this pipeline deploys RELEASED v-tags only — dispatch FROM the tag ref (leave the box empty; the ref provides the tag), or type the tag in the input (got: '$TAG')" ; exit 1 ;;
+          esac
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag || github.ref_name }}
       - name: publish-image
-        uses: kanatabi/anvil/actions/publish-image@a8f1d119e728cce115c20fe7425245c9a1e40d1c # stateless loss-baseline + await-merge
+        uses: kanatabi/anvil/actions/publish-image@6e210f5c232a17273d59da7766fbb9f5d2d25d56 # guarded push/create + optional-tag dispatch
         with:
           app: lumen
           tag: ${{ inputs.tag || github.ref_name }}
@@ -101,7 +119,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: plan the bump (evidence only)
-        uses: kanatabi/anvil/actions/deploy-plan@a8f1d119e728cce115c20fe7425245c9a1e40d1c # stateless loss-baseline + await-merge
+        uses: kanatabi/anvil/actions/deploy-plan@6e210f5c232a17273d59da7766fbb9f5d2d25d56 # guarded push/create + optional-tag dispatch
         with:
           app: lumen
           env: foundation
@@ -116,7 +134,7 @@ jobs:
     environment: deploy-foundation
     steps:
       - name: open the bump PR (human-approved)
-        uses: kanatabi/anvil/actions/deploy-bump@a8f1d119e728cce115c20fe7425245c9a1e40d1c # stateless loss-baseline + await-merge
+        uses: kanatabi/anvil/actions/deploy-bump@6e210f5c232a17273d59da7766fbb9f5d2d25d56 # guarded push/create + optional-tag dispatch
         with:
           app: lumen
           env: foundation
@@ -131,7 +149,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: plan the bump (evidence only)
-        uses: kanatabi/anvil/actions/deploy-plan@a8f1d119e728cce115c20fe7425245c9a1e40d1c # stateless loss-baseline + await-merge
+        uses: kanatabi/anvil/actions/deploy-plan@6e210f5c232a17273d59da7766fbb9f5d2d25d56 # guarded push/create + optional-tag dispatch
         with:
           app: lumen
           env: staging
@@ -146,7 +164,7 @@ jobs:
     environment: deploy-staging
     steps:
       - name: open the bump PR (human-approved)
-        uses: kanatabi/anvil/actions/deploy-bump@a8f1d119e728cce115c20fe7425245c9a1e40d1c # stateless loss-baseline + await-merge
+        uses: kanatabi/anvil/actions/deploy-bump@6e210f5c232a17273d59da7766fbb9f5d2d25d56 # guarded push/create + optional-tag dispatch
         with:
           app: lumen
           env: staging
@@ -161,7 +179,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: plan the bump (evidence only)
-        uses: kanatabi/anvil/actions/deploy-plan@a8f1d119e728cce115c20fe7425245c9a1e40d1c # stateless loss-baseline + await-merge
+        uses: kanatabi/anvil/actions/deploy-plan@6e210f5c232a17273d59da7766fbb9f5d2d25d56 # guarded push/create + optional-tag dispatch
         with:
           app: lumen
           env: production
@@ -176,7 +194,7 @@ jobs:
     environment: deploy-production
     steps:
       - name: open the bump PR (human-approved)
-        uses: kanatabi/anvil/actions/deploy-bump@a8f1d119e728cce115c20fe7425245c9a1e40d1c # stateless loss-baseline + await-merge
+        uses: kanatabi/anvil/actions/deploy-bump@6e210f5c232a17273d59da7766fbb9f5d2d25d56 # guarded push/create + optional-tag dispatch
         with:
           app: lumen
           env: production
