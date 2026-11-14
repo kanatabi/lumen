@@ -133,3 +133,12 @@ concerns. Branches off `main` — this **is** its own repo now.
 
 The owner's PLAN.md is a local-only journal (gitignored); never recreate a plan
 file in Git.
+
+## Context sync (workspace rule, 2026-11-15)
+
+Changes that alter this repo's stack, anatomy, contract, commands,
+conventions, or state update the vault's learning note in the SAME round:
+`omicron` → `context-knowledge/repos/lumen/README.md` (+ its
+`LEARNING.md` if the change minted a lesson; + the runbook/INFRA docs when
+decision- or operation-level). "The code landed but the vault didn't" is
+an incomplete round — the checklist lives at the end of that note.
