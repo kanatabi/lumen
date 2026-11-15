@@ -149,16 +149,23 @@ func facetClauses(q domain.ListQuery) []string {
 // postSort maps §1 sort to sortable attributes. Relevance (q present, no
 // explicit sort) returns nil — engine ranking owns it. Lists (no q) default
 // to curation: rank:asc.
+// The tie-break is CONTRACT, not engine-internal accident (2026-11-15):
+// a single-key rule left equal-value ordering to Meilisearch's internals
+// — which happened to be date-desc for this corpus (curation ≡ date
+// desc), silently drifted from the twin, and would silently change again
+// with any future corpus. Every explicit sort now names its secondary
+// (ties = newest first, the §1 curation instinct). The twin mirrors it;
+// the contract job guards the agreement.
 func postSort(sort, q string) []string {
 	switch sort {
 	case "newest":
-		return []string{"day:desc"}
+		return []string{"day:desc", "rank:asc"}
 	case "oldest":
-		return []string{"day:asc"}
+		return []string{"day:asc", "rank:asc"}
 	case "quickest":
-		return []string{"readTime:asc"}
+		return []string{"readTime:asc", "day:desc", "rank:asc"}
 	case "longest":
-		return []string{"readTime:desc"}
+		return []string{"readTime:desc", "day:desc", "rank:asc"}
 	case "relevance":
 		if q != "" {
 			return nil
