@@ -4,8 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/kanatabi/lumen/internal/obs"
 	"github.com/kanatabi/lumen/internal/role"
 )
 
@@ -251,11 +253,111 @@ func TestEnvKeysPerRole(t *testing.T) {
 			t.Fatalf("%s must bind for cms ONLY: cms=%v admin=%v", k, cms, admin)
 		}
 	}
-	if len(all) != len(admin)+len(cms)-4 { // the four shared meta keys counted once
-		t.Fatalf("all must be the exact union: %d vs admin=%d cms=%d", len(all), len(admin), len(cms))
+	// the shared keys (meta + metrics_port: rows scoped to BOTH planes)
+	// are counted once in the union — derived from the bindings, never
+	// hardcoded, so the observability round's both-plane rows keep this
+	// arithmetic honest without another edit here
+	shared := 0
+	for _, b := range Bindings {
+		if b.Planes == role.PlanesAll {
+			for _, e := range b.Envs {
+				// EnvKeys keeps only LUMEN_-prefixed names (plain PORT is a
+				// container-convenience binding, not part of the union) —
+				// count the SAME filter, or the arithmetic drifts
+				if strings.HasPrefix(e, "LUMEN_") {
+					shared++
+				}
+			}
+		}
+	}
+	if len(all) != len(admin)+len(cms)-shared {
+		t.Fatalf("all must be the exact union: %d vs admin=%d cms=%d (shared=%d)", len(all), len(admin), len(cms), shared)
 	}
 	// sorted stability (the command's machine-readable promise)
 	if !slices.IsSorted(admin) || !slices.IsSorted(cms) {
 		t.Fatal("EnvKeys must be sorted")
+	}
+}
+
+func TestTimeoutDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
+	t.Setenv("LUMEN_SESSION_JWT_SECRET", "test-secret")
+	t.Setenv("LUMEN_CONFIG", "")
+	// NOTHING set: the registry defaults must survive the whole chain
+	// (viper SetDefault → GetDuration → the resolved map → Timeout).
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Timeout("meilisearch", "search"); got != 2_000_000_000 { // 2s
+		t.Fatalf("meili search default: %v", got)
+	}
+	if got := c.Timeout("meilisearch", "index.upsert"); got != 10_000_000_000 { // the op override
+		t.Fatalf("meili index.upsert override: %v", got)
+	}
+	if got := c.Timeout("openbao", "read"); got != 5_000_000_000 {
+		t.Fatalf("bao default: %v", got)
+	}
+
+	// EMPTY env value falls through to the default (viper's native
+	// AllowEmptyEnv=false) — the user's explicit directive.
+	t.Setenv("LUMEN_TIMEOUT_MEILISEARCH", "")
+	t.Setenv("LUMEN_TIMEOUT_MEILISEARCH_SEARCH", "")
+	c, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Timeout("meilisearch", "search"); got != 2_000_000_000 {
+		t.Fatalf("empty env must fall to the default: %v", got)
+	}
+
+	// the dep default wins over the op default when no override exists;
+	// an explicit override wins over everything
+	t.Setenv("LUMEN_TIMEOUT_MEILISEARCH", "3s")
+	c, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Timeout("meilisearch", "search"); got != 3_000_000_000 {
+		t.Fatalf("dep default via env: %v", got)
+	}
+	t.Setenv("LUMEN_TIMEOUT_MEILISEARCH_SEARCH", "900ms")
+	c, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Timeout("meilisearch", "search"); got != 900_000_000 {
+		t.Fatalf("op override via env: %v", got)
+	}
+}
+
+func TestTimeoutBindingsMatchRegistry(t *testing.T) {
+	// the guard: the hand-written Bindings rows can never drift from the
+	// obs registry's derived keys — a new op in the table without a row
+	// here would bind nothing (its env var reads nothing).
+	rows := map[string]bool{}
+	for _, b := range Bindings {
+		if strings.HasPrefix(b.Key, "timeout_") {
+			rows[b.Key] = true
+		}
+	}
+	for _, tk := range obs.TimeoutKeys() {
+		if !rows[tk.Key] {
+			t.Fatalf("registry key %s has no Bindings row", tk.Key)
+		}
+	}
+}
+
+func TestMetricsPortDefaults(t *testing.T) {
+	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
+	t.Setenv("LUMEN_SESSION_JWT_SECRET", "test-secret")
+	t.Setenv("LUMEN_CONFIG", "")
+	t.Setenv("LUMEN_METRICS_PORT", "")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MetricsPort != "9090" {
+		t.Fatalf("metrics port default: %q", c.MetricsPort)
 	}
 }

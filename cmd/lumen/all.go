@@ -46,11 +46,13 @@ func runAll() error {
 		return err
 	}
 	srv := startHTTP(deps)
+	metricsSrv := startMetrics(deps)
 
 	<-ctx.Done()
 	log.Print("all: shutdown signal — draining both roles")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Duration(10)*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+	_ = metricsSrv.Shutdown(shutdownCtx)
 	return stopConsumers(deps)
 }

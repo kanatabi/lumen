@@ -27,7 +27,7 @@ export LUMEN_MEDIA_ENDPOINT LUMEN_MEDIA_REGION LUMEN_MEDIA_BUCKET
 export LUMEN_MEDIA_ACCESS_KEY LUMEN_MEDIA_SECRET_KEY
 export LUMEN_MEDIA_FORCE_PATH LUMEN_MEDIA_CREATE_BUCKET
 
-.PHONY: help dev dev-plane up down seed user run worker server test test-integration test-media contract devs3 tidy
+.PHONY: help dev dev-plane up down seed user run worker server test test-integration test-media contract devs3 tidy config-init
 
 help:                  ## list targets
 	@grep -hE '^[a-z][a-z-]*:.*## ' Makefile | sed 's/:.*## /  — /'
@@ -73,6 +73,14 @@ worker:                ## consume the index queue only (the prod-split worker pr
 
 server:                ## serve HTTP only, no queue consumption (the prod-split API process)
 	go run ./cmd/lumen server
+
+config-init:           ## copy env.yaml.sample → env.yaml ONLY if absent (never clobbers a live config)
+	@if [ -f env.yaml ]; then \
+		echo "  env.yaml exists — left untouched (clobbering a live config is a doctrine break)"; \
+	else \
+		cp env.yaml.sample env.yaml && \
+		echo "  wrote env.yaml from the sample — fill the secrets (or rely on make dev's exported env: ENV WINS over the file)"; \
+	fi
 
 test:                  ## offline gate: unit + harness against the in-memory twin
 	LUMEN_BAO_ADDR= LUMEN_INTEGRATION= go test ./...

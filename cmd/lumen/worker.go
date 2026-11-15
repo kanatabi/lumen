@@ -39,9 +39,16 @@ func runWorker() error {
 	if err := startConsumers(deps); err != nil {
 		return err
 	}
+	// the worker's ONLY listener: its job counters and the outbound RED
+	// series (the engine dials) need a scrape door — a queue worker
+	// without /metrics is a blind spot
+	metricsSrv := startMetrics(deps)
 
 	<-ctx.Done()
 	log.Print("worker: shutdown signal — draining")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = metricsSrv.Shutdown(shutdownCtx)
 	return stopConsumers(deps)
 }
 

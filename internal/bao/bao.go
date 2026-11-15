@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/vault/api"
+
+	"github.com/kanatabi/lumen/internal/obs"
 )
 
 // Payload mirrors mellon's SecretPayload; Meta mirrors SecretMeta.
@@ -109,6 +111,13 @@ func New() (*Client, error) {
 
 // Enabled reports whether the plane is configured (fixture/dev mode may
 // not have it — the endpoints then answer 503 honestly, never fake data).
+// out wraps one Bao dial in the observability + timeout machinery
+// (internal/obs): the §9 relay's every verb is a counted, bounded call —
+// a hung OpenBao dies at the deadline instead of hanging the desk.
+func (c *Client) out(ctx context.Context, operation string, run func(ctx context.Context) error) error {
+	return obs.Outbound(ctx, obs.DepBao, operation, run)
+}
+
 func Enabled() bool {
 	return os.Getenv("LUMEN_BAO_ADDR") != "" && os.Getenv("LUMEN_BAO_ROLE_ID") != "" &&
 		os.Getenv("LUMEN_BAO_SECRET_ID") != ""
@@ -120,9 +129,14 @@ func (c *Client) login(ctx context.Context) error {
 	if c.token != "" && time.Until(c.expires) > time.Minute {
 		return nil
 	}
-	resp, err := c.v.Logical().WriteWithContext(ctx, "auth/approle/login", map[string]any{
-		"role_id":   c.roleID,
-		"secret_id": c.secretID,
+	var resp *api.Secret
+	err := c.out(ctx, obs.OpBaoLogin, func(ctx context.Context) error {
+		var err error
+		resp, err = c.v.Logical().WriteWithContext(ctx, "auth/approle/login", map[string]any{
+			"role_id":   c.roleID,
+			"secret_id": c.secretID,
+		})
+		return err
 	})
 	if err != nil || resp == nil || resp.Auth == nil {
 		return fmt.Errorf("approle login: %w", err)
@@ -183,7 +197,12 @@ func (c *Client) ListPaths(ctx context.Context) ([]Path, error) {
 }
 
 func (c *Client) list(ctx context.Context, tokenClient *api.Client, path string) ([]string, error) {
-	resp, err := tokenClient.Logical().ListWithContext(ctx, path)
+	var resp *api.Secret
+	err := c.out(ctx, obs.OpBaoList, func(ctx context.Context) error {
+		var err error
+		resp, err = tokenClient.Logical().ListWithContext(ctx, path)
+		return err
+	})
 	if err != nil || resp == nil || resp.Data == nil {
 		return nil, err
 	}
@@ -208,9 +227,17 @@ func (c *Client) Read(ctx context.Context, app, env string, version int) (*Paylo
 	if version > 0 {
 		// the SDK treats the path literally — version is QUERY data, and
 		// string-splicing it into the path was a 404 waiting to happen
-		resp, err = tokenClient.Logical().ReadWithData(path, map[string][]string{"version": {fmt.Sprint(version)}})
+		err = c.out(ctx, obs.OpBaoRead, func(ctx context.Context) error {
+			var err error
+			resp, err = tokenClient.Logical().ReadWithDataWithContext(ctx, path, map[string][]string{"version": {fmt.Sprint(version)}})
+			return err
+		})
 	} else {
-		resp, err = tokenClient.Logical().ReadWithContext(ctx, path)
+		err = c.out(ctx, obs.OpBaoRead, func(ctx context.Context) error {
+			var err error
+			resp, err = tokenClient.Logical().ReadWithContext(ctx, path)
+			return err
+		})
 	}
 	if err != nil {
 		return nil, err
@@ -264,7 +291,12 @@ func (c *Client) Meta(ctx context.Context, app, env string) (*Meta, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := tokenClient.Logical().Read(fmt.Sprintf("kv/metadata/%s/%s", app, env))
+	var resp *api.Secret
+	err = c.out(ctx, obs.OpBaoRead, func(ctx context.Context) error {
+		var err error
+		resp, err = tokenClient.Logical().ReadWithContext(ctx, fmt.Sprintf("kv/metadata/%s/%s", app, env))
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -389,7 +421,12 @@ func (c *Client) PatchMetadataCustom(ctx context.Context, app, env string, custo
 		return err
 	}
 	req.Headers.Set("Content-Type", "application/merge-patch+json")
-	resp, err := tokenClient.RawRequestWithContext(ctx, req)
+	var resp *api.Response
+	err = c.out(ctx, obs.OpBaoWrite, func(ctx context.Context) error {
+		var err error
+		resp, err = tokenClient.RawRequestWithContext(ctx, req)
+		return err
+	})
 	if err != nil {
 		return classifyErr(err)
 	}
@@ -411,11 +448,16 @@ func (c *Client) WriteCAS(ctx context.Context, app, env string, data map[string]
 	// cas_required is a property of the mount (set at bootstrap); every
 	// write here carries an explicit cas regardless — a version-0 write
 	// cannot clobber anything (Bao rejects mismatched CAS outright)
-	resp, err := tokenClient.Logical().Write(fmt.Sprintf("kv/data/%s/%s", app, env), map[string]any{
-		"data": data,
-		"options": map[string]any{
-			"cas": cas,
-		},
+	var resp *api.Secret
+	err = c.out(ctx, obs.OpBaoWrite, func(ctx context.Context) error {
+		var err error
+		resp, err = tokenClient.Logical().WriteWithContext(ctx, fmt.Sprintf("kv/data/%s/%s", app, env), map[string]any{
+			"data": data,
+			"options": map[string]any{
+				"cas": cas,
+			},
+		})
+		return err
 	})
 	if err != nil {
 		return 0, classifyErr(err)

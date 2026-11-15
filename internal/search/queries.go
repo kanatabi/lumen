@@ -24,6 +24,8 @@ import (
 	meili "github.com/meilisearch/meilisearch-go"
 
 	"github.com/kanatabi/lumen/internal/domain"
+
+	"github.com/kanatabi/lumen/internal/obs"
 )
 
 // ErrUnavailable = the engine cannot answer. The pure-engine ruling makes
@@ -79,7 +81,7 @@ func (s *Service) SuggestPosts(ctx context.Context, needle string, limit int) (L
 }
 
 func (s *Service) searchPosts(ctx context.Context, q string, searchRequest *meili.SearchRequest) (ListPage, error) {
-	res, err := s.client.Index(s.postsIndex).Search(q, searchRequest)
+	res, err := s.search(ctx, s.postsIndex, q, searchRequest)
 	if err != nil {
 		return ListPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -185,11 +187,19 @@ func (s *Service) ListPhotos(ctx context.Context, limit int) (PhotoPage, error) 
 	if limit <= 0 {
 		searchRequest.Limit = postLimitWhenAbsent
 	}
-	res, err := s.client.Index(s.photosIndex).Search("", searchRequest)
+	var page PhotoPage
+	err := s.out(ctx, obs.OpMeiliSearch, func(ctx context.Context) error {
+		res, err := s.client.Index(s.photosIndex).SearchWithContext(ctx, "", searchRequest)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
+		page = PhotoPage{IDs: idsOf(res), Total: res.EstimatedTotalHits}
+		return nil
+	})
 	if err != nil {
-		return PhotoPage{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return PhotoPage{}, err
 	}
-	return PhotoPage{IDs: idsOf(res), Total: res.EstimatedTotalHits}, nil
+	return page, nil
 }
 
 type PhotoPage struct {
@@ -210,7 +220,12 @@ func (s *Service) TagCounts(ctx context.Context) (map[string]int64, error) {
 		Filter: "status = published",
 		Facets: []string{"tags"},
 	}
-	res, err := s.client.Index(IndexPosts).Search("", req)
+	var res *meili.SearchResponse
+	err := s.out(ctx, obs.OpMeiliFacets, func(ctx context.Context) error {
+		var err error
+		res, err = s.client.Index(IndexPosts).SearchWithContext(ctx, "", req)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}

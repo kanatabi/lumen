@@ -18,11 +18,13 @@ import (
 	"github.com/kanatabi/lumen/internal/api/admin"
 	"github.com/kanatabi/lumen/internal/api/public"
 	"github.com/kanatabi/lumen/internal/httpx"
+	"github.com/kanatabi/lumen/internal/obs"
 	"github.com/kanatabi/lumen/internal/role"
 )
 
 func NewRouter(pub *public.Handler, adm *admin.Handler, planes role.Planes) http.Handler {
 	r := chi.NewRouter()
+	r.Use(obs.Middleware)       // the inbound RED pair (route TEMPLATES; the probes skip)
 	r.Use(middleware.RequestID) // identity for lumen's op-level logs
 	r.Use(httpx.EchoRequestID)  // the response carries it — the chain is one id end to end
 	r.Use(httpx.AccessLog)      // the transport's access line (method/path/status/duration + the id)

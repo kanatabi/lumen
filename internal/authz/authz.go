@@ -37,6 +37,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kanatabi/lumen/internal/obs"
 )
 
 // CacheTTL is the documented staleness bound; one knob, greppable.
@@ -123,7 +125,15 @@ func (r *Remote) Verify(ctx context.Context, authorization string) (Identity, er
 	}
 	r.mu.Unlock()
 
-	id, err := r.ask(ctx, authorization)
+	// the introspection edge is a COUNTED, BOUNDED outbound call
+	// (dependency=lumen-admin, op=introspect): the whole ask — dial,
+	// decode, classify — is one budget from the timeout table.
+	var id Identity
+	err := obs.Outbound(ctx, obs.DepAdminPlane, obs.OpIntrospect, func(ctx context.Context) error {
+		var err error
+		id, err = r.ask(ctx, authorization)
+		return err
+	})
 	if err != nil {
 		return Identity{}, err
 	}

@@ -20,9 +20,11 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 
+	"github.com/kanatabi/lumen/internal/obs"
 	"github.com/kanatabi/lumen/internal/role"
 )
 
@@ -32,6 +34,7 @@ type Config struct {
 	Role role.Role
 
 	Port          string // default 8080
+	MetricsPort   string // the UNROUTED /metrics listener (default 9090, both planes)
 	DBURL         string // postgres://… (required — there is no fixture mode)
 	Origin        string // absolute base (feed/D2; the cms plane's public reads)
 	MeiliURL      string // read-serving engine (§4) — required on the cms plane
@@ -50,6 +53,30 @@ type Config struct {
 	// VALUES live in Bao lumen/{env}; provider choice is HUMAN-GATE #9 —
 	// this struct is provider-agnostic by construction.
 	Media Media
+
+	// timeouts holds ONLY this role's bound keys (unbound = absent = the
+	// registry default, via Timeout's fallback). The map keys are the
+	// viper keys ("timeout.meilisearch", "timeout.meilisearch.index_upsert").
+	timeouts map[string]time.Duration
+}
+
+// Timeout resolves one outbound call's budget (internal/obs's wrapper
+// reads this): the per-op override wins, then the dep default, then the
+// registry's in-code default. A MISSING or EMPTY key falls through — the
+// user's directive made explicit (viper: empty env = unset, native).
+func (c Config) Timeout(dependency, operation string) time.Duration {
+	// the dep name is verbatim (the registry constants ARE the key pieces);
+	// only the operation's dots normalize (obs.KeyPiece — the same rule
+	// TimeoutKeys() used to mint the bindings)
+	dep := dependency
+	op := obs.KeyPiece(operation)
+	if d, ok := c.timeouts["timeout_"+dep+"_"+op]; ok && d > 0 {
+		return d
+	}
+	if d, ok := c.timeouts["timeout_"+dep]; ok && d > 0 {
+		return d
+	}
+	return obs.TableDefault(dependency, operation)
 }
 
 type Media struct {
@@ -108,6 +135,32 @@ var Bindings = []Binding{
 	// the §9 vault door — internal/bao.New reads these directly (lazy
 	// AppRole login); declared so the admin plane's key set is complete
 	{Key: "bao_addr", Envs: []string{"LUMEN_BAO_ADDR"}, Planes: role.PlaneAdmin, consumed: true},
+
+	// ---- the observability round (2026-11-15) ----
+	// The /metrics listener: UNROUTED (Traefik never routes it) — the
+	// no-sidecar contract's scrape door; both planes carry it.
+	{Key: "metrics_port", Envs: []string{"LUMEN_METRICS_PORT"}, Planes: bothPlanes, Note: "unrouted /metrics"},
+	// The outbound timeouts: DERIVED from internal/obs's registry (one
+	// table there, the single file). Which plane binds which dep follows
+	// which plane DIALS it — an admin pod never dials the engine.
+	// MISSING/EMPTY key = the default (viper's empty-env fall-through).
+	{Key: "timeout_meilisearch", Envs: []string{"LUMEN_TIMEOUT_MEILISEARCH"}, Planes: role.PlaneCMS, Note: "dep default"},
+	{Key: "timeout_meilisearch_facets", Envs: []string{"LUMEN_TIMEOUT_MEILISEARCH_FACETS"}, Planes: role.PlaneCMS},
+	{Key: "timeout_meilisearch_index_upsert", Envs: []string{"LUMEN_TIMEOUT_MEILISEARCH_INDEX_UPSERT"}, Planes: role.PlaneCMS},
+	{Key: "timeout_meilisearch_index_delete", Envs: []string{"LUMEN_TIMEOUT_MEILISEARCH_INDEX_DELETE"}, Planes: role.PlaneCMS},
+	{Key: "timeout_meilisearch_ensure", Envs: []string{"LUMEN_TIMEOUT_MEILISEARCH_ENSURE"}, Planes: role.PlaneCMS},
+	{Key: "timeout_meilisearch_ready", Envs: []string{"LUMEN_TIMEOUT_MEILISEARCH_READY"}, Planes: role.PlaneCMS},
+	{Key: "timeout_meilisearch_search", Envs: []string{"LUMEN_TIMEOUT_MEILISEARCH_SEARCH"}, Planes: role.PlaneCMS},
+	{Key: "timeout_cloudflare-r2", Envs: []string{"LUMEN_TIMEOUT_CLOUDFLARE_R2"}, Planes: role.PlaneCMS, Note: "dep default"},
+	{Key: "timeout_cloudflare-r2_put", Envs: []string{"LUMEN_TIMEOUT_CLOUDFLARE_R2_PUT"}, Planes: role.PlaneCMS},
+	{Key: "timeout_cloudflare-r2_ensure_bucket", Envs: []string{"LUMEN_TIMEOUT_CLOUDFLARE_R2_ENSURE_BUCKET"}, Planes: role.PlaneCMS},
+	{Key: "timeout_openbao", Envs: []string{"LUMEN_TIMEOUT_OPENBAO"}, Planes: role.PlaneAdmin, Note: "dep default"},
+	{Key: "timeout_openbao_login", Envs: []string{"LUMEN_TIMEOUT_OPENBAO_LOGIN"}, Planes: role.PlaneAdmin},
+	{Key: "timeout_openbao_list", Envs: []string{"LUMEN_TIMEOUT_OPENBAO_LIST"}, Planes: role.PlaneAdmin},
+	{Key: "timeout_openbao_read", Envs: []string{"LUMEN_TIMEOUT_OPENBAO_READ"}, Planes: role.PlaneAdmin},
+	{Key: "timeout_openbao_write", Envs: []string{"LUMEN_TIMEOUT_OPENBAO_WRITE"}, Planes: role.PlaneAdmin},
+	{Key: "timeout_lumen-admin", Envs: []string{"LUMEN_TIMEOUT_LUMEN_ADMIN"}, Planes: role.PlaneCMS, Note: "the introspection edge; dep default"},
+	{Key: "timeout_lumen-admin_introspect", Envs: []string{"LUMEN_TIMEOUT_LUMEN_ADMIN_INTROSPECT"}, Planes: role.PlaneCMS},
 	{Key: "bao_role_id", Envs: []string{"LUMEN_BAO_ROLE_ID"}, Planes: role.PlaneAdmin, consumed: true},
 	{Key: "bao_secret_id", Envs: []string{"LUMEN_BAO_SECRET_ID"}, Planes: role.PlaneAdmin, consumed: true},
 }
@@ -154,6 +207,12 @@ func Load() (Config, error) {
 	rt := role.Role(v.GetString("role"))
 
 	v.SetDefault("port", "8080")
+	v.SetDefault("metrics_port", "9090") // the unrouted observability listener
+	// the timeout table: defaults registered from the obs registry (the
+	// single source), bindings above are plane-scoped
+	for _, tk := range obs.TimeoutKeys() {
+		v.SetDefault(tk.Key, tk.Default)
+	}
 	// PORT is the workspace's env convention (earendil/mellon containers use
 	// it; vortex manifests will too) — the binding table carries BOTH names,
 	// LUMEN_-prefixed wins by convention, plain PORT by reality.
@@ -201,9 +260,24 @@ func Load() (Config, error) {
 	}
 	getBool := func(key string) bool { return bound[key] && v.GetBool(key) }
 
+	timeouts := map[string]time.Duration{}
+	for _, b := range Bindings {
+		// FLAT prefix: the timeout keys are timeout_* (dotted keys would
+		// collide in viper's traversal — see obs.TimeoutKey); this filter
+		// must match the same spelling the rows carry.
+		if !b.Planes.Has(rt.Planes()) || b.consumed || !strings.HasPrefix(b.Key, "timeout_") {
+			continue
+		}
+		if d := v.GetDuration(b.Key); d > 0 {
+			timeouts[b.Key] = d
+		}
+	}
+
 	c := Config{
 		Role:             rt,
 		Port:             v.GetString("port"),
+		MetricsPort:      get("metrics_port"),
+		timeouts:         timeouts,
 		DBURL:            get("db_url"),
 		Origin:           get("origin"),
 		MeiliURL:         get("meili_url"),

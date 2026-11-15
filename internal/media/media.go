@@ -20,6 +20,8 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	"github.com/kanatabi/lumen/internal/obs"
 )
 
 const MaxBytes = 20 << 20 // 20 MiB — generous for originals, hostile to abuse
@@ -141,30 +143,36 @@ func NewS3(ctx context.Context, c Config) (Store, string, error) {
 }
 
 func (s *s3Store) Put(ctx context.Context, key, contentType string, data []byte) error {
-	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(s.bucket),
-		Key:         aws.String(key),
-		Body:        bytes.NewReader(data),
-		ContentType: aws.String(contentType),
-		// content-addressed key ⇒ immutable caching is HONEST (lumen §5)
-		CacheControl: aws.String("public, max-age=31536000, immutable"),
+	// the adapter owns its instrumentation: the put is a counted, bounded
+	// call (multi-MB uploads get the 30 s put budget from the table)
+	return obs.Outbound(ctx, obs.DepR2, obs.OpR2Put, func(ctx context.Context) error {
+		_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket:      aws.String(s.bucket),
+			Key:         aws.String(key),
+			Body:        bytes.NewReader(data),
+			ContentType: aws.String(contentType),
+			// content-addressed key ⇒ immutable caching is HONEST (lumen §5)
+			CacheControl: aws.String("public, max-age=31536000, immutable"),
+		})
+		return err
 	})
-	return err
 }
 
 func (s *s3Store) EnsureBucket(ctx context.Context) error {
 	if !s.createBucket {
 		return nil
 	}
-	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(s.bucket)})
-	if err == nil {
+	return obs.Outbound(ctx, obs.DepR2, obs.OpR2EnsureBucket, func(ctx context.Context) error {
+		_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(s.bucket)})
+		if err == nil {
+			return nil
+		}
+		_, err = s.client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(s.bucket)})
+		if err != nil && !strings.Contains(err.Error(), "already exists") {
+			return err
+		}
 		return nil
-	}
-	_, err = s.client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(s.bucket)})
-	if err != nil && !strings.Contains(err.Error(), "already exists") {
-		return err
-	}
-	return nil
+	})
 }
 
 // URL composes the absolute serving URL: CDN base in prod, endpoint+bucket

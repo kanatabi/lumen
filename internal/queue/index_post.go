@@ -2,10 +2,12 @@ package queue
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 
+	"github.com/kanatabi/lumen/internal/obs"
 	"github.com/kanatabi/lumen/internal/search"
 )
 
@@ -23,8 +25,11 @@ type indexPostWorker struct {
 
 // Work reads CURRENT truth at run time: found → upsert the doc; gone or
 // soft-deleted → delete the doc. Retries and edit bursts converge either way.
-func (w *indexPostWorker) Work(ctx context.Context, job *river.Job[IndexPostArgs]) error {
+func (w *indexPostWorker) Work(ctx context.Context, job *river.Job[IndexPostArgs]) (err error) {
 	logger := jobLogger(job)
+	started := time.Now()
+	defer func() { obs.ObserveJob(job.Kind, started, err) }()
+	// the metrics mirror the log lines (queue_job_total / queue_job_duration)
 	defer logger.Debug("job.done", "kind", "index_post")
 	doc, found, err := w.store.PostDocByID(ctx, job.Args.PostID)
 	if err != nil {

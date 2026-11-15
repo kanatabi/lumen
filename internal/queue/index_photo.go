@@ -2,10 +2,12 @@ package queue
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 
+	"github.com/kanatabi/lumen/internal/obs"
 	"github.com/kanatabi/lumen/internal/search"
 )
 
@@ -21,8 +23,11 @@ type indexPhotoWorker struct {
 	engine Engine
 }
 
-func (w *indexPhotoWorker) Work(ctx context.Context, job *river.Job[IndexPhotoArgs]) error {
+func (w *indexPhotoWorker) Work(ctx context.Context, job *river.Job[IndexPhotoArgs]) (err error) {
 	logger := jobLogger(job)
+	started := time.Now()
+	defer func() { obs.ObserveJob(job.Kind, started, err) }()
+	// the metrics mirror the log lines (queue_job_total / queue_job_duration)
 	defer logger.Debug("job.done", "kind", "index_photo")
 	doc, found, err := w.store.PhotoDocByID(ctx, job.Args.PhotoID)
 	if err != nil {
