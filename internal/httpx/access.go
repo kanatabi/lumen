@@ -7,7 +7,9 @@
 package httpx
 
 import (
+	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -43,8 +45,35 @@ func AccessLog(next http.Handler) http.Handler {
 				"status", aw.status,
 				"duration_ms", time.Since(start).Milliseconds(),
 				"bytes", aw.bytes,
+				// WHO is calling (2026-11-15): the production /admin/* 401
+				// beat was a mystery client for hours because the line
+				// carried no source. The router mounts
+				// ClientIPFromXFFTrustedProxies(1) BEFORE the handlers run
+				// — by log time XFF's trusted Traefik hop is trimmed and
+				// the last entry is the caller's address. An IP is an
+				// identifier, not a payload (the redaction doctrine is
+				// untouched). Absent XFF = the pod-direct caller; log
+				// RemoteAddr then.
+				"client_ip", clientIP(r),
 			)
 		}()
 		next.ServeHTTP(aw, r)
 	})
+}
+
+// clientIP is the XFF-trusted read: the chain's LAST entry after the
+// router's trusted-depth trim. Empty XFF (pod-direct: the probes, the
+// worker's engine dials) falls back to RemoteAddr — the peer's socket
+// address, which is exactly as honest as it sounds.
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.LastIndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[i+1:])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
