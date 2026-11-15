@@ -434,6 +434,12 @@ explicit** subset of OpenBao KV v2 — per `INFRA_ARCHITECTURE.md` §5.5:
   any version remains viewable (`?version=N`); unpin is RFC 7396 null-delete.
 - Redaction: values never logged (structured logs redact by key); audit is **Bao's own
   audit devices** — lumen logs the *operation*, not the *payload*.
+- **The correlation seam (2026-11-15):** every request carries a request-id (adopted
+  from the caller's `X-Request-Id` or minted by chi's middleware); every log line down
+  the stack prints it; the response echoes it; the queue's jobs carry it (metadata) plus
+  their own job-id — the whole chain is one grep. Errors SPEAK: the catch-all's
+  `http.unhandled`, the media S3 calls' `media.put.failed`, the deny reasons. The
+  redaction rules are untouched (the ids are not payloads).
 - The same client runs the CI drift check (§5.5) — one implementation, two consumers.
 - **Dev plane == prod plane:** compose runs OpenBao itself (`ghcr.io/openbao/openbao`,
   pinned) — the KV-v2/AppRole battery (bootstrap, redaction proofs, CAS conflicts)
