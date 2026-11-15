@@ -14,6 +14,8 @@ import (
 	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/service"
 	"github.com/kanatabi/lumen/internal/store"
+
+	"github.com/kanatabi/lumen/internal/obs"
 )
 
 // dependencies is the shared world per process role — and since the role
@@ -57,6 +59,20 @@ func initDependencies(ctx context.Context) (*dependencies, error) {
 	pg := store.NewPG(pool) // ONE truth wrapper — the queue client and every
 	// role share this exact instance, not parallel constructions
 	deps := &dependencies{config: cfg, pool: pool, store: pg}
+
+	// the observability wiring (2026-11-15): the timeout lookup reads the
+	// RESOLVED config (env > file > the registry defaults), and the pool
+	// gauges sample the one true pool — set ONCE here, never per-request.
+	obs.SetTimeoutLookup(cfg.Timeout)
+	obs.RegisterPoolSampler(func() obs.PoolSample {
+		s := pool.Stat()
+		return obs.PoolSample{
+			Acquired:      float64(s.AcquiredConns()),
+			Idle:          float64(s.IdleConns()),
+			Max:           float64(s.MaxConns()),
+			EmptyAcquires: float64(s.EmptyAcquireCount()),
+		}
+	})
 
 	if cfg.Role == role.Admin {
 		// the control plane by ruling: its database is lumen_admin and

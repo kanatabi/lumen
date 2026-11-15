@@ -16,6 +16,8 @@ import (
 	"time"
 
 	meili "github.com/meilisearch/meilisearch-go"
+
+	"github.com/kanatabi/lumen/internal/obs"
 )
 
 // Index uid DEFAULTS. The role split made index names config —
@@ -111,11 +113,36 @@ func orDefault(v, d string) string {
 	return d
 }
 
+// out wraps ONE engine call in the observability + timeout machinery
+// (internal/obs): the dependency label is constant, the operation is the
+// call site's, the deadline comes from the LUMEN_TIMEOUT_* table, and the
+// wrapped fn receives the BOUNDED context. Every adapter owns its
+// instrumentation — this is the engine's.
+func (s *Service) out(ctx context.Context, operation string, run func(ctx context.Context) error) error {
+	return obs.Outbound(ctx, obs.DepMeilisearch, operation, run)
+}
+
+// search is the read path's shared form: one engine query under the
+// outbound machinery — posts/photos/tags, public and admin desks alike.
+func (s *Service) search(ctx context.Context, index, query string, request *meili.SearchRequest) (*meili.SearchResponse, error) {
+	var res *meili.SearchResponse
+	err := s.out(ctx, obs.OpMeiliSearch, func(ctx context.Context) error {
+		var err error
+		res, err = s.client.Index(index).SearchWithContext(ctx, query, request)
+		return err
+	})
+	return res, err
+}
+
 // Ensure bootstraps the indexes idempotently: create-if-missing, then
 // settings every boot (harmless re-application is the honest way to keep
 // dev-recreated and long-lived engines identical). The NAMES ride config —
 // the worker/server bootstrap and the seed all converge here.
 func (s *Service) Ensure(ctx context.Context) error {
+	return s.out(ctx, obs.OpMeiliEnsure, s.ensure)
+}
+
+func (s *Service) ensure(ctx context.Context) error {
 	indexes := []struct {
 		uid      string
 		settings *meili.Settings
@@ -217,44 +244,52 @@ func (s *Service) IndexPosts(ctx context.Context, docs []PostDoc) error {
 	if len(docs) == 0 {
 		return nil
 	}
-	task, err := s.client.Index(s.postsIndex).UpdateDocumentsWithContext(ctx, docs, primaryKey())
-	if err != nil {
-		return err
-	}
-	return s.waitTask(ctx, task)
+	return s.out(ctx, obs.OpMeiliIndexUpsert, func(ctx context.Context) error {
+		task, err := s.client.Index(s.postsIndex).UpdateDocumentsWithContext(ctx, docs, primaryKey())
+		if err != nil {
+			return err
+		}
+		return s.waitTask(ctx, task)
+	})
 }
 
 func (s *Service) DeletePosts(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	task, err := s.client.Index(s.postsIndex).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
-	if err != nil {
-		return err
-	}
-	return s.waitTask(ctx, task)
+	return s.out(ctx, obs.OpMeiliIndexDelete, func(ctx context.Context) error {
+		task, err := s.client.Index(s.postsIndex).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
+		if err != nil {
+			return err
+		}
+		return s.waitTask(ctx, task)
+	})
 }
 
 func (s *Service) IndexPhotos(ctx context.Context, docs []PhotoDoc) error {
 	if len(docs) == 0 {
 		return nil
 	}
-	task, err := s.client.Index(s.photosIndex).UpdateDocumentsWithContext(ctx, docs, primaryKey())
-	if err != nil {
-		return err
-	}
-	return s.waitTask(ctx, task)
+	return s.out(ctx, obs.OpMeiliIndexUpsert, func(ctx context.Context) error {
+		task, err := s.client.Index(s.photosIndex).UpdateDocumentsWithContext(ctx, docs, primaryKey())
+		if err != nil {
+			return err
+		}
+		return s.waitTask(ctx, task)
+	})
 }
 
 func (s *Service) DeletePhotos(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	task, err := s.client.Index(s.photosIndex).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
-	if err != nil {
-		return err
-	}
-	return s.waitTask(ctx, task)
+	return s.out(ctx, obs.OpMeiliIndexDelete, func(ctx context.Context) error {
+		task, err := s.client.Index(s.photosIndex).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
+		if err != nil {
+			return err
+		}
+		return s.waitTask(ctx, task)
+	})
 }
 
 func strIDs(ids []int64) []string {
@@ -269,26 +304,32 @@ func (s *Service) IndexTags(ctx context.Context, docs []TagDoc) error {
 	if len(docs) == 0 {
 		return nil
 	}
-	task, err := s.client.Index(IndexTags).UpdateDocumentsWithContext(ctx, docs, primaryKey())
-	if err != nil {
-		return err
-	}
-	return s.waitTask(ctx, task)
+	return s.out(ctx, obs.OpMeiliIndexUpsert, func(ctx context.Context) error {
+		task, err := s.client.Index(IndexTags).UpdateDocumentsWithContext(ctx, docs, primaryKey())
+		if err != nil {
+			return err
+		}
+		return s.waitTask(ctx, task)
+	})
 }
 
 func (s *Service) DeleteTags(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	task, err := s.client.Index(IndexTags).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
-	if err != nil {
-		return err
-	}
-	return s.waitTask(ctx, task)
+	return s.out(ctx, obs.OpMeiliIndexDelete, func(ctx context.Context) error {
+		task, err := s.client.Index(IndexTags).DeleteDocumentsWithContext(ctx, strIDs(ids), nil)
+		if err != nil {
+			return err
+		}
+		return s.waitTask(ctx, task)
+	})
 }
 
 // Ready powers /readyz: the engine must ANSWER, not just accept TCP.
-func (s *Service) Ready(_ context.Context) error {
-	_, err := s.client.Health()
-	return err
+func (s *Service) Ready(ctx context.Context) error {
+	return s.out(ctx, obs.OpMeiliReady, func(ctx context.Context) error {
+		_, err := s.client.HealthWithContext(ctx)
+		return err
+	})
 }

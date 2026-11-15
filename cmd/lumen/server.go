@@ -19,6 +19,7 @@ import (
 	"github.com/kanatabi/lumen/internal/bao"
 	"github.com/kanatabi/lumen/internal/config"
 	"github.com/kanatabi/lumen/internal/media"
+	"github.com/kanatabi/lumen/internal/obs"
 	"github.com/kanatabi/lumen/internal/role"
 	"github.com/kanatabi/lumen/internal/service"
 	"github.com/kanatabi/lumen/internal/throttle"
@@ -48,6 +49,7 @@ func runServer() error {
 		return err
 	}
 	srv := startHTTP(deps)
+	metricsSrv := startMetrics(deps)
 
 	// Wait for shutdown signal
 	<-ctx.Done()
@@ -58,6 +60,9 @@ func runServer() error {
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("server: shutdown: %v", err)
+	}
+	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("metrics: shutdown: %v", err)
 	}
 
 	return nil
@@ -94,6 +99,28 @@ func startHTTP(deps *dependencies) *http.Server {
 		log.Printf("server: HTTP listening on %s (role=%s)", srv.Addr, cfg.Role)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("http: %v", err)
+		}
+	}()
+	return srv
+}
+
+// startMetrics is the UNROUTED observability listener (LUMEN_METRICS_PORT,
+// default 9090): /metrics only — Traefik never routes it, the pod's
+// prometheus.io/* annotations opt the scrape in (the no-sidecar contract).
+// EVERY process carries it: the server's inbound RED, the worker's job
+// counters — a queue worker without /metrics is a blind spot.
+func startMetrics(deps *dependencies) *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", obs.Handler())
+	srv := &http.Server{
+		Addr:              ":" + deps.config.MetricsPort,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		log.Printf("metrics: listening on %s (unrouted; scrape opt-in via pod annotations)", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("metrics: %v", err)
 		}
 	}()
 	return srv

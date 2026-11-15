@@ -1,8 +1,11 @@
 # Secrets doctrine (workspace non-negotiable #1): the ENV FILE ITSELF is the
-# thing that never enters git. Values live in Bao (lumen/{env}); this sample is
-# schema documentation only.
+# thing that never enters git. Values live in Bao (lumen/{env}); env.yaml
+# (the LOADABLE dev template copy — `make config-init`) is a VALUE carrier
+# the moment a dev fills it in, so it is ignored by its plain name.
+# env.yaml.sample stays tracked (negated below) — it is valueless by design.
 .env
 .env.*
+env.yaml
 !.env.example
 !env.yaml.sample
 *.local

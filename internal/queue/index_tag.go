@@ -2,10 +2,12 @@ package queue
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 
+	"github.com/kanatabi/lumen/internal/obs"
 	"github.com/kanatabi/lumen/internal/search"
 )
 
@@ -25,8 +27,11 @@ type indexTagWorker struct {
 	engine Engine
 }
 
-func (w *indexTagWorker) Work(ctx context.Context, job *river.Job[IndexTagArgs]) error {
+func (w *indexTagWorker) Work(ctx context.Context, job *river.Job[IndexTagArgs]) (err error) {
 	logger := jobLogger(job)
+	started := time.Now()
+	defer func() { obs.ObserveJob(job.Kind, started, err) }()
+	// the metrics mirror the log lines (queue_job_total / queue_job_duration)
 	defer logger.Debug("job.done", "kind", "index_tag")
 	doc, found, err := w.store.TagDocByID(ctx, job.Args.TagID)
 	if err != nil {
