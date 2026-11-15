@@ -87,3 +87,39 @@ func TestFailLogsUnhandledWithRequestID(t *testing.T) {
 		t.Fatalf("the catch-all must log err + request_id: %s", buf.String())
 	}
 }
+
+func TestAccessLogLineShape(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	h := middleware.RequestID(httpx.AccessLog(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+		_, _ = w.Write([]byte("x"))
+	})))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tags", nil))
+
+	line := buf.String()
+	for _, want := range []string{"http.access", "method=GET", "path=/api/tags", "status=418", "request_id="} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the access line must carry %q: %s", want, line)
+		}
+	}
+}
+
+func TestAccessLogSkipsProbes(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	h := middleware.RequestID(httpx.AccessLog(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if strings.Contains(buf.String(), "http.access") {
+		t.Fatalf("the probes must stay silent: %s", buf.String())
+	}
+}
