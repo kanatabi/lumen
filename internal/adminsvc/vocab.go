@@ -2,14 +2,39 @@ package adminsvc
 
 import (
 	"context"
+	"sort"
 
 	"github.com/kanatabi/lumen/internal/store"
 )
 
 // ListTags: the full vocabulary for the desk and the editor comboboxes.
-// order "" = curated count order; "newest" = creation recency (dashboard).
+// The DB owns the LIST; the engine owns the COUNTS (the published facet —
+// the counter column died, design amendment 2026-11-15; the counts merge
+// here). order "" = count desc then name (the desk's curated order);
+// "newest" = creation recency (the dashboard) — the DB's order stands,
+// counts still filled (the desk's POSTS column reads on both orders).
 func (s *Service) ListTags(ctx context.Context, order string) ([]store.TagRowOut, error) {
-	return s.store.ListAdminTags(ctx, order)
+	rows, err := s.store.ListAdminTags(ctx, order)
+	if err != nil {
+		return nil, err
+	}
+	counts, err := s.engine.TagCounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		rows[i].Posts = int(counts[rows[i].Name])
+	}
+	if order == "newest" {
+		return rows, nil
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].Posts != rows[j].Posts {
+			return rows[i].Posts > rows[j].Posts
+		}
+		return rows[i].Name < rows[j].Name
+	})
+	return rows, nil
 }
 
 func (s *Service) CreateTag(ctx context.Context, name string) (store.TagRowOut, error) {

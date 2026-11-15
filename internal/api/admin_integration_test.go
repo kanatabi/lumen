@@ -653,6 +653,7 @@ func TestTagDesk(t *testing.T) {
 	if code, res = harness.admin(http.MethodPost, "/admin/posts/integration-tagging/publish", ""); code != http.StatusOK {
 		t.Fatalf("publish %d: %s", code, res)
 	}
+	harness.drain() // the facet counts are eventually consistent (the index job's latency)
 	pub := pubTags()
 	if !strings.Contains(pub, "integration-tag-alpha") || !strings.Contains(pub, `"posts":1`) {
 		t.Fatalf("widget missing the used featured tag: %s", pub)

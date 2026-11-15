@@ -105,8 +105,8 @@ func TestMigrateForRole_FreshDatabases(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if n != 5 { // 0001,0003,0004,0005,0006
-			t.Fatalf("cms subset size = %d, want 5", n)
+		if n != 6 { // 0001,0003,0004,0005,0006
+			t.Fatalf("cms subset size = %d, want 6", n) // 0008 joined the cms plane
 		}
 		if hasTable(t, pool, "users") {
 			t.Fatal("RULING VIOLATION: a fresh cms database grew a users table")

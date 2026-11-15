@@ -22,10 +22,13 @@ import (
 // docs commit together, the §2 contract, same as posts. The old Postgres
 // prefix lookup (SearchTagNames) is retired.
 
-const tagCols = `name, posts, featured, created_at, updated_at`
+// The posts counter DIED (0008, design amendment 2026-11-15): the
+// published-count derives from the search facet at read (adminsvc/the
+// public service merge it); the DB keeps the vocabulary's own facts only.
+const tagCols = `name, featured, created_at, updated_at`
 
 func (g *PG) ListAdminTags(ctx context.Context, order string) ([]TagRowOut, error) {
-	sortSQL := `ORDER BY posts DESC, name ASC`
+	sortSQL := `ORDER BY name ASC` // the count sort is the SERVICE's (the facet merge owns it)
 	if order == "newest" {
 		sortSQL = `ORDER BY created_at DESC, name ASC`
 	}
@@ -37,7 +40,7 @@ func (g *PG) ListAdminTags(ctx context.Context, order string) ([]TagRowOut, erro
 	out := []TagRowOut{}
 	for rows.Next() {
 		var t TagRowOut
-		if err := rows.Scan(&t.Name, &t.Posts, &t.Featured, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.Name, &t.Featured, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -63,7 +66,7 @@ type TagPatch struct {
 
 func scanTag(row pgx.Row) (TagRowOut, error) {
 	var t TagRowOut
-	err := row.Scan(&t.Name, &t.Posts, &t.Featured, &t.CreatedAt, &t.UpdatedAt)
+	err := row.Scan(&t.Name, &t.Featured, &t.CreatedAt, &t.UpdatedAt)
 	return t, err
 }
 
@@ -91,7 +94,7 @@ func (g *PG) HydrateTagsByIDs(ctx context.Context, ids []int64) ([]TagRowOut, er
 	for rows.Next() {
 		var id int64
 		var t TagRowOut
-		if err := rows.Scan(&id, &t.Name, &t.Posts, &t.Featured, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&id, &t.Name, &t.Featured, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		byID[id] = t
@@ -174,9 +177,9 @@ func (g *PG) CreateAdminTag(ctx context.Context, name string, enqueuer indexEnqu
 		var id int64
 		var t TagRowOut
 		if err := tx.QueryRow(ctx,
-			`INSERT INTO tags(name, posts, featured) VALUES ($1, 0, FALSE)
+			`INSERT INTO tags(name, featured) VALUES ($1, FALSE)
 			 RETURNING id, `+tagCols, name).
-			Scan(&id, &t.Name, &t.Posts, &t.Featured, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			Scan(&id, &t.Name, &t.Featured, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return err
 		}
 		if err := enqueuer.InsertIndexTagTx(ctx, tx, id); err != nil {

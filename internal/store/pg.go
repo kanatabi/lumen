@@ -77,23 +77,25 @@ func (g *PG) Photos(ctx context.Context) ([]domain.Photo, error) {
 // TagCloud reads the curated widget (0005: the flag is `featured`; the desk
 // toggles it by hand — promotion is curation, never arithmetic). The public
 // list shows FEATURED tags WITH at least one live published post: a featured
-// tag at zero is ready, not display-worthy (the widget never shows "0").
-// Counts stay publish-maintained (§1: never aggregated at read for SHAPE —
-// this filters on the maintained column, it does not compute it). Ties break
-// by name, the documented tie order.
-func (g *PG) TagCloud(ctx context.Context) ([]domain.Tag, error) {
-	rows, err := g.pool.Query(ctx, `SELECT name, posts FROM tags WHERE featured AND posts > 0 ORDER BY posts DESC, name ASC`)
+// FeaturedTagNames: the widget's candidates (featured only). NO counts —
+// the published-count derives from the search facet at read (the service
+// merges; the counter column died 2026-11-15: the index is re-enqueued on
+// every save and is the freshest copy of tag usage — a stored counter was
+// a third copy that lagged, and the update path's missing recompute made
+// it lie).
+func (g *PG) FeaturedTagNames(ctx context.Context) ([]string, error) {
+	rows, err := g.pool.Query(ctx, `SELECT name FROM tags WHERE featured ORDER BY name ASC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []domain.Tag
+	var out []string
 	for rows.Next() {
-		var t domain.Tag
-		if err := rows.Scan(&t.Name, &t.Posts); err != nil {
+		var name string
+		if err := rows.Scan(&name); err != nil {
 			return nil, err
 		}
-		out = append(out, t)
+		out = append(out, name)
 	}
 	return out, rows.Err()
 }

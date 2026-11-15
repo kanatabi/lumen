@@ -12,6 +12,7 @@ package service
 
 import (
 	"context"
+	"sort"
 
 	"github.com/kanatabi/lumen/internal/domain"
 	"github.com/kanatabi/lumen/internal/search"
@@ -30,6 +31,10 @@ type Engine interface {
 	SearchPosts(ctx context.Context, q domain.ListQuery) (search.ListPage, error)
 	SuggestPosts(ctx context.Context, needle string, limit int) (search.ListPage, error)
 	ListPhotos(ctx context.Context, limit int) (search.PhotoPage, error)
+	// TagCounts: the PUBLISHED-post count per tag name (the engine's facet
+	// distribution; the twin derives from its corpus). The count's only
+	// home — the counter column died, design amendment 2026-11-15.
+	TagCounts(ctx context.Context) (map[string]int64, error)
 }
 
 // Truth is the hydration + point-read seam (store.PG online, store.Mem twin —
@@ -161,15 +166,33 @@ func (s *Service) FeaturedPhoto(ctx context.Context) (domain.Photo, error) {
 	return domain.Photo{}, store.ErrNotFound
 }
 
+// ListTags: the Topics widget's feed. The DB owns the LIST (featured
+// names); the engine owns the COUNTS (the published facet — merged here,
+// filtered to count > 0: a tag at zero is ready, not display-worthy).
+// Sorted count desc, name ASC (the documented tie order). Pure-engine:
+// the engine down = visible 503, no truth-side fallback.
 func (s *Service) ListTags(ctx context.Context) ([]domain.Tag, error) {
-	tags, err := s.truth.TagCloud(ctx)
+	names, err := s.truth.FeaturedTagNames(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if tags == nil {
-		return []domain.Tag{}, nil
+	counts, err := s.engine.TagCounts(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return tags, nil
+	out := make([]domain.Tag, 0, len(names))
+	for _, name := range names {
+		if c := counts[name]; c > 0 {
+			out = append(out, domain.Tag{Name: name, Posts: int(c)})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Posts != out[j].Posts {
+			return out[i].Posts > out[j].Posts
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
 }
 
 func summarize(d domain.Detail) domain.Summary {
