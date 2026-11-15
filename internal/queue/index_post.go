@@ -24,11 +24,15 @@ type indexPostWorker struct {
 // Work reads CURRENT truth at run time: found → upsert the doc; gone or
 // soft-deleted → delete the doc. Retries and edit bursts converge either way.
 func (w *indexPostWorker) Work(ctx context.Context, job *river.Job[IndexPostArgs]) error {
+	logger := jobLogger(job)
+	defer logger.Debug("job.done", "kind", "index_post")
 	doc, found, err := w.store.PostDocByID(ctx, job.Args.PostID)
 	if err != nil {
+		logger.Error("job.failed", "err", err)
 		return err
 	}
 	if !found {
+		logger.Info("job.delete", "target", job.Args.PostID)
 		return w.engine.DeletePosts(ctx, []int64{job.Args.PostID})
 	}
 	return w.engine.IndexPosts(ctx, []search.PostDoc{doc})
@@ -36,9 +40,7 @@ func (w *indexPostWorker) Work(ctx context.Context, job *river.Job[IndexPostArgs
 
 // EnqueueIndexPost: the out-of-transaction path (seed/reconcile tools).
 func (c *Client) EnqueueIndexPost(ctx context.Context, postID int64) error {
-	_, err := c.rc.Insert(ctx, IndexPostArgs{PostID: postID}, &river.InsertOpts{
-		UniqueOpts: pendingUniqueness(),
-	})
+	_, err := c.rc.Insert(ctx, IndexPostArgs{PostID: postID}, insertOpts(ctx))
 	return err
 }
 

@@ -24,6 +24,7 @@ import (
 func NewRouter(pub *public.Handler, adm *admin.Handler, planes role.Planes) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID) // identity for lumen's op-level logs
+	r.Use(httpx.EchoRequestID)  // the response carries it — the chain is one id end to end
 	// Client IP for the login throttle, via chi's MODERN extraction (the
 	// deprecated RealIP rewrote RemoteAddr; this publishes GetClientIP(ctx)
 	// without touching the connection). numTrustedProxies=1 states the

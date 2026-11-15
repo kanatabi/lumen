@@ -40,7 +40,14 @@ func Fail(w http.ResponseWriter, r *http.Request, err error) {
 		// pure-engine posture: lists/search 503 when the read path is down
 		WriteErr(w, http.StatusServiceUnavailable, "search engine unavailable")
 	default:
-		_ = r
+		// THE catch-all speaks: an unmapped error logs its full self with
+		// the request's correlation id — the silent-500 class is dead
+		// (walked 2026-11-15: the media relay's 500s were invisible).
+		Logger(r).Error("http.unhandled",
+			"err", err,
+			"method", r.Method,
+			"path", r.URL.Path,
+		)
 		WriteErr(w, http.StatusInternalServerError, "internal error")
 	}
 }

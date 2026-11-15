@@ -26,8 +26,11 @@ type indexTagWorker struct {
 }
 
 func (w *indexTagWorker) Work(ctx context.Context, job *river.Job[IndexTagArgs]) error {
+	logger := jobLogger(job)
+	defer logger.Debug("job.done", "kind", "index_tag")
 	doc, found, err := w.store.TagDocByID(ctx, job.Args.TagID)
 	if err != nil {
+		logger.Error("job.failed", "err", err)
 		return err
 	}
 	if !found {
@@ -38,9 +41,7 @@ func (w *indexTagWorker) Work(ctx context.Context, job *river.Job[IndexTagArgs])
 
 // EnqueueIndexTag: the out-of-transaction path (backfill tooling).
 func (c *Client) EnqueueIndexTag(ctx context.Context, tagID int64) error {
-	_, err := c.rc.Insert(ctx, IndexTagArgs{TagID: tagID}, &river.InsertOpts{
-		UniqueOpts: pendingUniqueness(),
-	})
+	_, err := c.rc.Insert(ctx, IndexTagArgs{TagID: tagID}, insertOpts(ctx))
 	return err
 }
 

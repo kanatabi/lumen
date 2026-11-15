@@ -3,6 +3,7 @@ package adminsvc
 import (
 	"context"
 
+	"github.com/kanatabi/lumen/internal/httpx"
 	"github.com/kanatabi/lumen/internal/media"
 	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/store"
@@ -75,9 +76,17 @@ func (s *Service) UploadPhoto(ctx context.Context, filename string, raw []byte) 
 	}
 	processed.Key = media.WithPrefix(s.mediaPrefix, processed.Key)
 	if err := s.media.EnsureBucket(ctx); err != nil {
+		httpx.LoggerCtx(ctx).Error("media.bucket.failed",
+			"op", "photo.put", "bucket", s.mediaBucket, "err", err)
 		return store.AdminPhoto{}, err
 	}
 	if err := s.media.Put(ctx, processed.Key, processed.ContentType, processed.Data); err != nil {
+		// the S3 error code is the WHOLE diagnosis (InvalidRegionName
+		// walked 2026-11-15 through a probe pod because this line was
+		// silent); payloads never log, error codes always do
+		httpx.LoggerCtx(ctx).Error("media.put.failed",
+			"op", "photo.put", "bucket", s.mediaBucket,
+			"key", processed.Key, "err", err)
 		return store.AdminPhoto{}, err
 	}
 	src := media.URL(s.mediaCDNBase, s.mediaEndpoint, s.mediaBucket, processed.Key)

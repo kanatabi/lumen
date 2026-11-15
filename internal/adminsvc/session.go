@@ -3,8 +3,10 @@ package adminsvc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
+	"github.com/kanatabi/lumen/internal/httpx"
 	"github.com/kanatabi/lumen/internal/session"
 	"github.com/kanatabi/lumen/internal/store"
 )
@@ -65,11 +67,19 @@ func (s *Service) VerifyBearer(ctx context.Context, bearer string) (Principal, e
 	}
 	claims, err := session.Parse(s.jwtSecret, token)
 	if err != nil {
-		return Principal{}, ErrInvalidCredentials
+		return Principal{}, fmt.Errorf("%w: parse: %v", ErrInvalidCredentials, err)
 	}
 	auth, exists, err := s.store.AuthFor(ctx, claims.Subject)
-	if err != nil || !exists || auth.TokenVersion != claims.TV {
-		return Principal{}, ErrInvalidCredentials // bumped = dead
+	if err != nil {
+		return Principal{}, fmt.Errorf("%w: auth row read: %v", ErrInvalidCredentials, err)
+	}
+	if !exists || auth.TokenVersion != claims.TV {
+		// bumped = dead; unknown = dead — the wire copy is the same, the
+		// LOG carries which half died (the RoleSplit hunt's tool)
+		httpx.LoggerCtx(ctx).Info("session.verify.deny",
+			"sub", claims.Subject, "reason", map[bool]string{true: "unknown-user", false: "tv-mismatch"}[!exists],
+			"row_tv", map[bool]any{true: nil, false: auth.TokenVersion}[!exists])
+		return Principal{}, ErrInvalidCredentials
 	}
 	return Principal{Username: claims.Subject, Role: auth.Role, MustChange: auth.MustChange}, nil
 }

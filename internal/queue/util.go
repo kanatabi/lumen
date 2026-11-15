@@ -12,7 +12,9 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -22,6 +24,7 @@ import (
 	"github.com/riverqueue/river/rivermigrate"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/kanatabi/lumen/internal/httpx"
 	"github.com/kanatabi/lumen/internal/search"
 )
 
@@ -91,6 +94,19 @@ func pendingUniqueness() river.UniqueOpts {
 	}}
 }
 
+// insertOpts: uniqueness + the CORRELATION metadata — the creating HTTP
+// request's id rides the job (NOT in the args: ByArgs uniqueness must keep
+// coalescing an edit-burst regardless of who called). The worker's logs
+// carry job_id + request_id, so a worker line greps back to the exact
+// request that spawned it (the observability amendment, 2026-11-15).
+func insertOpts(ctx context.Context) *river.InsertOpts {
+	meta, _ := json.Marshal(map[string]string{"request_id": httpx.RequestIDFromCtx(ctx)})
+	return &river.InsertOpts{
+		UniqueOpts: pendingUniqueness(),
+		Metadata:   meta,
+	}
+}
+
 // Drain blocks until no job remains in a non-terminal state (seed, reindex,
 // and the engine-tier tests settle deterministically before asserting).
 func (c *Client) Drain(ctx context.Context) error {
@@ -110,4 +126,19 @@ func (c *Client) Drain(ctx context.Context) error {
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// jobLogger: the worker's correlation logger — the river job's id + the
+// creating HTTP request's id (the enqueue stamped it into the metadata),
+// so a worker line greps back to the request that spawned the work.
+func jobLogger[T river.JobArgs](job *river.Job[T]) *slog.Logger {
+	log := slog.Default().With("job_id", job.ID)
+	var meta map[string]string
+	if len(job.Metadata) > 0 {
+		_ = json.Unmarshal(job.Metadata, &meta)
+		if id, ok := meta["request_id"]; ok && id != "" {
+			log = log.With("request_id", id)
+		}
+	}
+	return log
 }
