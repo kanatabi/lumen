@@ -95,6 +95,10 @@ func TestFileFillsEnvWins(t *testing.T) {
 	}
 	t.Setenv("LUMEN_CONFIG", file)
 	t.Setenv("LUMEN_DB_URL", "")
+	// the Makefile exports the dev defaults (LUMEN_SESSION_JWT_SECRET
+	// among them) — env-first means they'd beat the FILE and the test
+	// asserts the file-fill; neutralize the ambient (empty = unset)
+	t.Setenv("LUMEN_SESSION_JWT_SECRET", "")
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)

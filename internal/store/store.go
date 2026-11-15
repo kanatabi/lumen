@@ -44,6 +44,8 @@ type Source interface {
 	// Photos in curation order, gallery/featured flags populated (the service
 	// filters to gallery=true for §1 — kept here so ordering is the source's).
 	Photos(ctx context.Context) ([]domain.Photo, error)
-	// TagCloud in curated order (counts + sequence decided BE-side, §1).
-	TagCloud(ctx context.Context) ([]domain.Tag, error)
+	// FeaturedTagNames: the widget's candidate list (featured only; NO
+	// counts — the published-count is the engine facet's job now, merged
+	// by the service; design amendment 2026-11-15, the counter died).
+	FeaturedTagNames(ctx context.Context) ([]string, error)
 }

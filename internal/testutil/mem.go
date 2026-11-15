@@ -56,10 +56,28 @@ func (m *MemSource) Photos(_ context.Context) ([]domain.Photo, error) {
 	return out, nil
 }
 
-func (m *MemSource) TagCloud(_ context.Context) ([]domain.Tag, error) {
-	out := make([]domain.Tag, len(m.fixture.Tags))
-	copy(out, m.fixture.Tags)
+func (m *MemSource) FeaturedTagNames(_ context.Context) ([]string, error) {
+	out := make([]string, len(m.fixture.Tags))
+	for i, t := range m.fixture.Tags {
+		out[i] = t.Name
+	}
 	return out, nil
+}
+
+// TagCounts (the Engine face): the published-post count per tag, derived
+// from the twin's OWN corpus — drafts are structurally absent from
+// fixture.Posts, so the derived count IS the published count. The
+// fixture's hand-maintained Tags counts remain the §1 SHAPE parity, but
+// the serving counts now derive — any drift between them is a fixture
+// lie the API tests will catch.
+func (m *MemSource) TagCounts(_ context.Context) (map[string]int64, error) {
+	counts := map[string]int64{}
+	for _, d := range m.fixture.Posts {
+		for _, t := range d.Tags {
+			counts[t]++
+		}
+	}
+	return counts, nil
 }
 
 // ---- the twin AS engine (service.Engine seam, offline) ----

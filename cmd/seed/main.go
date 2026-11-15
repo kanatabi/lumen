@@ -175,12 +175,17 @@ func loadFixture(ctx context.Context, pool *pgxpool.Pool, file string) error {
 				return nil
 			}
 			var id int64
+			// the posts counter DIED (0008): the published-count derives
+			// from the search facet at read — the seed's hand counts were
+			// that column's feeder, gone with it. The count param survives
+			// as the fixture's §1 shape parity (earendil's twin), unused
+			// here.
+			_ = count
 			err := tx.QueryRow(ctx,
-				`INSERT INTO tags(name, posts, featured) VALUES ($1,$2,$3)
+				`INSERT INTO tags(name, featured) VALUES ($1,$2)
 				 ON CONFLICT (name) DO UPDATE
-				 SET posts = GREATEST(tags.posts, EXCLUDED.posts),
-				     featured = tags.featured OR EXCLUDED.featured
-				 RETURNING id`, name, count, featured).Scan(&id)
+				 SET featured = tags.featured OR EXCLUDED.featured
+				 RETURNING id`, name, featured).Scan(&id)
 			if err != nil {
 				return err
 			}

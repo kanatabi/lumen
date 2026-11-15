@@ -196,3 +196,31 @@ type PhotoPage struct {
 	IDs   []int64
 	Total int64
 }
+
+// TagCounts: the PUBLISHED-post count per tag name, straight from the
+// engine's facet distribution on the posts index — the count's ONLY home
+// (the counter column died, design amendment 2026-11-15: the index is
+// re-enqueued on every save, so it is the freshest copy of tag usage; a
+// stored counter was a third copy that lagged). The status filter is the
+// leak rule — the index holds drafts too; only published may count.
+// Limit 0: hits are noise here, facets are the answer.
+func (s *Service) TagCounts(ctx context.Context) (map[string]int64, error) {
+	req := &meili.SearchRequest{
+		Limit:  0,
+		Filter: "status = published",
+		Facets: []string{"tags"},
+	}
+	res, err := s.client.Index(IndexPosts).Search("", req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	out := map[string]int64{}
+	if len(res.FacetDistribution) > 0 {
+		if err := json.Unmarshal(res.FacetDistribution, &struct {
+			Tags map[string]int64 `json:"tags"`
+		}{Tags: out}); err != nil {
+			return nil, fmt.Errorf("%w: facet distribution unreadable: %v", ErrUnavailable, err)
+		}
+	}
+	return out, nil
+}

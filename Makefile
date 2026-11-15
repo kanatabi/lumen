@@ -75,7 +75,10 @@ server:                ## serve HTTP only, no queue consumption (the prod-split 
 	go run ./cmd/lumen server
 
 test:                  ## offline gate: unit + harness against the in-memory twin
-	go test ./...
+	LUMEN_BAO_ADDR= LUMEN_INTEGRATION= go test ./...
+	# the cleared gates: dev-plane.env (-include'd above) must not turn the
+	# offline gate red when the compose stack is down — the itests SKIP
+	# honestly instead of dial-failing (walked 2026-11-15)
 
 test-integration: up   ## EVERY gated suite against real infra: pg + meili + embedded S3 + dev OpenBao
 	FORCE=1 go run ./cmd/seed   ## tests need the deterministic corpus — explicit reset

@@ -280,7 +280,7 @@ func (g *PG) replaceTagsTx(ctx context.Context, tx pgx.Tx, tags []string, enqueu
 	for _, t := range tags {
 		var id int64
 		err := tx.QueryRow(ctx,
-			`INSERT INTO tags(name, posts, featured) VALUES ($1, 0, FALSE) ON CONFLICT DO NOTHING RETURNING id`, t).Scan(&id)
+			`INSERT INTO tags(name, featured) VALUES ($1, FALSE) ON CONFLICT DO NOTHING RETURNING id`, t).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue // existing vocabulary row
 		}
@@ -418,31 +418,12 @@ func (g *PG) ApplyPublish(ctx context.Context, slug string, src PublishSource, d
 			return err
 		}
 		// tag cloud counts are publish-maintained (§1: NEVER aggregated at read)
-		if err := recomputeTagCountsTx(ctx, tx); err != nil {
-			return err
-		}
 		return enqueuer.InsertIndexPostTx(ctx, tx, src.ID)
 	})
 	if err != nil {
 		return AdminPostDetail{}, err
 	}
 	return g.GetAdminPost(ctx, slug)
-}
-
-// recomputeTagCountsTx is TOTAL by design: every tag row takes the scalar
-// count, so a tag whose last published post went unpublished (or died) is
-// ZEROED — the join-shaped version silently kept ghost counts forever
-// (rows missing from the subquery were never written; found while planning
-// the tag desk, 2026-11-10). Scale makes the per-row subquery free; the
-// rule is what matters: the count column is truth, always recomputed from
-// it, at every publish/unpublish/delete.
-func recomputeTagCountsTx(ctx context.Context, tx pgx.Tx) error {
-	_, err := tx.Exec(ctx, `
-		UPDATE tags t SET posts = (
-			SELECT count(*)::int
-			FROM post_tags pt JOIN posts p ON p.id = pt.post_id
-			WHERE pt.tag_id = t.id AND p.status = 'published' AND p.deleted_at IS NULL)`)
-	return err
 }
 
 func (g *PG) UnpublishAdminPost(ctx context.Context, slug string, enqueuer indexEnqueuer) (AdminPostDetail, error) {
@@ -463,9 +444,6 @@ func (g *PG) UnpublishAdminPost(ctx context.Context, slug string, enqueuer index
 	err = pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`UPDATE posts SET status='unpublished', updated_at = now() WHERE id = $1`, id); err != nil {
-			return err
-		}
-		if err := recomputeTagCountsTx(ctx, tx); err != nil {
 			return err
 		}
 		return enqueuer.InsertIndexPostTx(ctx, tx, id)
@@ -492,9 +470,6 @@ func (g *PG) DeleteAdminPost(ctx context.Context, slug string, enqueuer indexEnq
 	return pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`UPDATE posts SET deleted_at = now(), updated_at = now() WHERE id = $1`, id); err != nil {
-			return err
-		}
-		if err := recomputeTagCountsTx(ctx, tx); err != nil {
 			return err
 		}
 		return enqueuer.InsertIndexPostTx(ctx, tx, id)
