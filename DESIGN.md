@@ -512,3 +512,59 @@ composition base+prefix+key stays coherent) and the engine index uids
 became config (`LUMEN_MEILI_INDEX_POSTS/_PHOTOS`, defaults unchanged);
 `lumen config keys --role X` prints each role's bound env names from the
 config layer itself.
+
+## 11. Observability — metrics + timeouts (2026-11-15)
+
+The observability machinery is ONE package (`internal/obs`) with ONE
+vocabulary, serving on the **UNROUTED admin port** (`LUMEN_METRICS_PORT`,
+default `9090`) on EVERY process shape — `server`, `worker`, `all`. The
+no-sidecar contract holds: Traefik never routes it; the pod's
+`prometheus.io/{scrape,port,path}` annotations opt the scrape in
+(vortex carries them).
+
+**Metric families** (all carry the static `service` label):
+
+| family | labels | answers |
+| :-- | :-- | :-- |
+| `outbound_request_total` | dependency, operation, result | did every outside call succeed? `result` distinguishes `error` from `timeout` |
+| `outbound_request_duration_seconds` | dependency, operation | how slow is each dep, at what percentile |
+| `outbound_inflight` | dependency | who is hung RIGHT NOW |
+| `http_request_total` / `http_request_duration_seconds` | method, route, status | the inbound RED pair, keyed on chi ROUTE TEMPLATES (never raw paths — flat cardinality); the probes skip |
+| `queue_job_total` / `queue_job_duration_seconds` | kind, result | the queue's attempt outcomes (`done`\|`error`; river retries an error) |
+| `db_pool_acquired` / `_idle` / `_max` / `_acquire_empty_total` | — | pool health; the empty counter is CUMULATIVE (pgx exposes no live waiter count) — rate it for saturation |
+
+**Label doctrine:** the axes are `dependency` (which outside system),
+`operation` (an ENUMERATED verb — never a slug, id, or query value),
+`result` (`ok|error|timeout`). Cardinality is flat by construction;
+`service` exists so cross-service panels are a `sum by` instead of
+pod-name regexes.
+
+**The outbound registry is ONE file** (`internal/obs/outbound.go`): every
+dependency name (`meilisearch`, `cloudflare-r2`, `openbao`,
+`lumen-admin`), every operation, and every timeout default. Adapters own
+their instrumentation — `internal/{search,media,bao,authz}` wrap their
+dials in `obs.Outbound(ctx, dep, op, fn)`, which bounds the wrapped call's
+context (the hung-dependency-hangs-the-SSR class dies here), records the
+RED series, and guarantees every failure SPEAKS one compact
+`outbound.failed` line (dependency, operation, result, duration_ms, err,
+request_id — read directly from chi; `httpx` imports `search`, so `obs`
+stays cycle-free beneath it). A call that COMPLETES past its budget
+classifies `ok` — the latency breach shows in the histogram; `timeout` is
+for calls whose bounded ctx expired and surfaced `DeadlineExceeded`.
+
+**Timeouts ride viper with FLAT underscore keys** (`timeout_meilisearch`,
+`timeout_meilisearch_index_upsert`) — dotted keys cannot hold a
+dep-default scalar and its op-override map at one YAML path. Precedence:
+op override > dep default > in-code default; a MISSING or EMPTY env falls
+to the default (viper's native `AllowEmptyEnv=false`). Config's bindings
+are DERIVED from the registry (`obs.TimeoutKeys` + `obs.KeyPiece`) with a
+parity guard test — a new op without a binding row fails `go test`, not
+a silent no-op. Defaults mirror today's budgets where one existed (the
+introspection client's 5 s carries over) and bound the rest (meili search
+2 s / index.upsert 10 s / ensure 30 s; r2 put 30 s / dep 10 s; bao 5 s).
+
+`env.yaml.sample` is now a LOADABLE template (secrets valueless, real dev
+defaults elsewhere): `make config-init` copies it to `env.yaml`
+copy-if-absent, and the `.gitignore` carries the plain `env.yaml` name
+(the loadable copy is a value carrier the moment a dev fills it in; the
+sample stays tracked — a guard test proves both via `git check-ignore`).
