@@ -417,7 +417,10 @@ func (g *PG) ApplyPublish(ctx context.Context, slug string, src PublishSource, d
 			src.ID, d.WordCount, d.ReadTime, d.Preview, d.Hash); err != nil {
 			return err
 		}
-		// tag cloud counts are publish-maintained (§1: NEVER aggregated at read)
+		// tag counts: the counter column DIED (0008, design amendment
+		// 2026-11-15) — the published count derives from the search facet at
+		// read (DESIGN §1's amendment); this tx only enqueues the index job
+		// whose doc the facet counts.
 		return enqueuer.InsertIndexPostTx(ctx, tx, src.ID)
 	})
 	if err != nil {

@@ -57,10 +57,19 @@ Tag   = { name: string, posts: number }  // posts = corpus count carrying the ta
 
 Semantics the FE depends on:
 
-- **`/api/tags` is curation, not aggregation-at-read.** Counts are maintained at
-  publish time (like `readTime`); the BE sorts by `posts` desc with a stable tie
-  order and decides how many tags the cloud ships. The rail renders the payload
-  as-is — the FE never counts, filters, or sorts.
+- **`/api/tags` is curation, not aggregation-from-Postgres.** *(Amended
+  2026-11-15 — the counter column DIED (migration 0008): the published
+  count per tag now derives at READ from the search engine's facet
+  distribution (`status = published` filter), merged into the DB's tag
+  list by the service. The index is re-enqueued on every save, so it is
+  the freshest copy of tag usage; a stored counter was a third copy that
+  lagged (the update path never recomputed it — the tag-desk zero). If
+  read-path optimization is ever needed, the cache layer (Redis) is the
+  sanctioned place — never a DB column. The BE still sorts and ships the
+  payload as-is — the FE never counts, filters, or sorts.)* Counts are
+  eventually consistent at the index queue's latency (sub-second); the
+  DB's junction remains truth for REFERENCES (any status: the delete
+  guard, the used-by roster).
 
 - **`/api/posts` order is curation.** The home feed renders exactly this order,
   paginated — an explicit rank column, not merely date desc (date is displayed,
