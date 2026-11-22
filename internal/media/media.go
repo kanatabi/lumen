@@ -86,6 +86,7 @@ func Process(raw []byte) (Processed, error) {
 // Store is the object-relay seam (faked in unit tests, S3 in life).
 type Store interface {
 	Put(ctx context.Context, key, contentType string, data []byte) error
+	Delete(ctx context.Context, key string) error
 	EnsureBucket(ctx context.Context) error
 }
 
@@ -153,6 +154,19 @@ func (s *s3Store) Put(ctx context.Context, key, contentType string, data []byte)
 			ContentType: aws.String(contentType),
 			// content-addressed key ⇒ immutable caching is HONEST (lumen §5)
 			CacheControl: aws.String("public, max-age=31536000, immutable"),
+		})
+		return err
+	})
+}
+
+// Delete removes the object — the photo GC's epilogue (row first, object
+// second). Failures are LOUD at the caller (the row is already gone; a
+// silent one strands the object forever), never a request failure.
+func (s *s3Store) Delete(ctx context.Context, key string) error {
+	return obs.Outbound(ctx, obs.DepR2, obs.OpR2Delete, func(ctx context.Context) error {
+		_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: aws.String(s.bucket),
+			Key:    aws.String(key),
 		})
 		return err
 	})

@@ -2,6 +2,7 @@ package adminsvc
 
 import (
 	"context"
+	"errors"
 
 	"github.com/kanatabi/lumen/internal/httpx"
 	"github.com/kanatabi/lumen/internal/media"
@@ -54,8 +55,64 @@ func (s *Service) PhotoReferences(ctx context.Context, id int64) ([]store.PhotoR
 func (s *Service) PatchPhoto(ctx context.Context, id int64, patch store.PhotoPatch) (store.PhotoDocRow, error) {
 	return s.store.UpdateAdminPhoto(ctx, id, patch, s.queue)
 }
+
+// gcAction — the delete's object-GC verdict (owner call 2026-11-22: the
+// eager best-effort object delete amends §8's keep-until-GC line).
+type gcAction int
+
+const (
+	gcRowOnly    gcAction = iota // no media store wired (dev/pre-M5): row-only
+	gcUnresolved                 // no ledger row resolves the src — nothing to delete
+	gcShared                     // sibling photo rows cite the same object — it stays
+	gcDelete                     // sole owner — delete the object
+)
+
+// gcDecide is PURE on purpose: the delete's whole decision table rides the
+// offline gate; the DB resolution (store.GetPhotoGC) and the S3 call ride
+// the integration walk.
+func gcDecide(mediaWired bool, path string, siblings int) gcAction {
+	switch {
+	case !mediaWired:
+		return gcRowOnly
+	case path == "":
+		return gcUnresolved
+	case siblings > 0:
+		return gcShared
+	default:
+		return gcDelete
+	}
+}
+
+// DeletePhoto — row FIRST (the request's contract; the worker's truth-read
+// converges the doc), then the object GC as a BEST-EFFORT epilogue: the
+// media_assets ledger resolves the key, a sibling row sharing the
+// content-addressed object keeps it alive, and ANY gc outcome — failure
+// included — is logged and never fails the request (the library row is
+// already gone; a red status would lie about what happened).
 func (s *Service) DeletePhoto(ctx context.Context, id int64) error {
-	return s.store.DeleteAdminPhoto(ctx, id, s.queue)
+	gc, err := s.store.GetPhotoGC(ctx, id)
+	if err != nil && !errors.Is(err, store.ErrNoPhoto) {
+		return err
+	}
+	if err := s.store.DeleteAdminPhoto(ctx, id, s.queue); err != nil {
+		return err
+	}
+	switch gcDecide(s.media != nil, gc.Path, gc.Siblings) {
+	case gcDelete:
+		if err := s.media.Delete(ctx, gc.Path); err != nil {
+			// the S3 error code is the WHOLE diagnosis (the put's lesson,
+			// 2026-11-15); the payload never logs, the code always does
+			httpx.LoggerCtx(ctx).Error("media.delete.failed",
+				"op", "photo.gc", "bucket", s.mediaBucket, "key", gc.Path, "err", err)
+		}
+	case gcShared:
+		httpx.LoggerCtx(ctx).Info("photo.gc.shared",
+			"op", "photo.gc", "id", id, "key", gc.Path, "siblings", gc.Siblings)
+	case gcUnresolved:
+		httpx.LoggerCtx(ctx).Warn("photo.gc.unresolved",
+			"op", "photo.gc", "id", id, "src", gc.Src)
+	}
+	return nil
 }
 
 // UploadPhoto is the §5 relay as a use case: probe (decode-and-REBUILD —

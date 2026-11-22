@@ -254,9 +254,10 @@ func (g *PG) CreateAdminPhotoFromUpload(ctx context.Context, src, alt string, wi
 	return g.GetAdminPhotoRow(ctx, id)
 }
 
-// DeleteAdminPhoto removes the LIBRARY ROW; the object outlives it until
-// storage GC (§8). The worker's truth-read finds the row gone and deletes
-// the DOC — convergence by construction.
+// DeleteAdminPhoto removes the LIBRARY ROW (the object GC is the service's
+// epilogue — row first, object second, best-effort). The worker's
+// truth-read finds the row gone and deletes the DOC — convergence by
+// construction.
 func (g *PG) DeleteAdminPhoto(ctx context.Context, id int64, enqueuer indexEnqueuer) error {
 	return pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `DELETE FROM photos WHERE id = $1`, id)
@@ -268,4 +269,43 @@ func (g *PG) DeleteAdminPhoto(ctx context.Context, id int64, enqueuer indexEnque
 		}
 		return enqueuer.InsertIndexPhotoTx(ctx, tx, id)
 	})
+}
+
+// PhotoGC is the delete-time object resolution: the ledger path is the
+// object-store KEY to delete, siblings = other photo rows citing the same
+// object.
+type PhotoGC struct {
+	Src      string
+	Path     string // media_assets.path — "" when no ledger row resolves the src
+	Siblings int    // other photos rows sharing the content-addressed object
+}
+
+// GetPhotoGC resolves the object-store GC handle for a photo row. The
+// media_assets upload ledger's `path` IS the handle (§6: content-addressed
+// path = "the dedupe and the GC handle in one") — matched as a SUFFIX of
+// the row's src, because the URL composes as base + "/" + path (the prefix
+// rode the key at upload; longest suffix wins when a no-prefix era path is
+// also a suffix). A missing ledger row (hand-inserted rows, pre-ledger
+// eras) resolves HONESTLY to "" — the GC then skips, never guesses.
+func (g *PG) GetPhotoGC(ctx context.Context, id int64) (PhotoGC, error) {
+	var out PhotoGC
+	if err := g.pool.QueryRow(ctx, `SELECT src FROM photos WHERE id = $1`, id).Scan(&out.Src); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return out, ErrNoPhoto
+		}
+		return out, err
+	}
+	err := g.pool.QueryRow(ctx, `
+		SELECT a.path, (
+			SELECT count(*) FROM photos q
+			WHERE q.id != $1 AND q.src LIKE '%' || a.path
+		)
+		FROM media_assets a
+		WHERE a.kind = 'upload' AND $2 LIKE '%' || a.path
+		ORDER BY length(a.path) DESC
+		LIMIT 1`, id, out.Src).Scan(&out.Path, &out.Siblings)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return out, nil // unresolved — the caller skips the object, by design
+	}
+	return out, err
 }

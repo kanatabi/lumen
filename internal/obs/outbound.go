@@ -43,6 +43,7 @@ const (
 	OpMeiliReady       = "ready"
 	OpR2Put            = "put"
 	OpR2EnsureBucket   = "ensure_bucket"
+	OpR2Delete         = "delete"
 	OpBaoLogin         = "login"
 	OpBaoList          = "list"
 	OpBaoRead          = "read"

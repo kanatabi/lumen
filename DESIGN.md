@@ -336,10 +336,17 @@ GET    /admin/photos/:id/references        → posts whose content embeds the ph
                                              dialog's warn-list — deletion is NEVER
                                              blocked; the human decides with full
                                              information (owner call 2026-11-08)
-DELETE /admin/photos/:id                   → removes the library row; the OBJECT keeps
-                                             serving until storage GC (§5 lifecycle) —
-                                             citing posts show a broken picture until
-                                             edited
+DELETE /admin/photos/:id                   → removes the library row AND best-effort deletes the
+                                             OBJECT (owner call 2026-11-22, amending the
+                                             keep-until-GC line): row FIRST — the request's
+                                             contract — then the media_assets ledger resolves
+                                             the key (suffix-join on src) and the store delete
+                                             rides as an epilogue whose failure logs LOUD but
+                                             never fails the request; a sibling photo row
+                                             sharing the content-addressed object KEEPS it alive
+                                             (dedupe), and an unresolved ledger row skips the
+                                             delete honestly (never guesses). Citing posts show
+                                             a broken picture until edited
 GET    /admin/collections                  → curation vocabulary (name + photo count;
                                              admin-internal — no public browse axis)
 POST   /admin/collections                  → create a collection; name slugified,

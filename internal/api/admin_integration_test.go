@@ -448,6 +448,88 @@ func TestAdminLifecycle(t *testing.T) {
 		}
 	})
 
+	// ---- the photo GC (owner call 2026-11-22: the eager best-effort
+	// object delete) — upload a REAL object, share it with a sibling row,
+	// then walk both branches: a shared object survives its first delete,
+	// the last owner's delete removes it. ----
+	t.Run("photo GC: row first, object best-effort — siblings keep it", func(t *testing.T) {
+		if os.Getenv("LUMEN_MEDIA") != "1" {
+			t.Skip("LUMEN_MEDIA unset")
+		}
+		var raw bytes.Buffer
+		img := image.NewRGBA(image.Rect(0, 0, 32, 32))
+		if err := jpeg.Encode(&raw, img, &jpeg.Options{Quality: 80}); err != nil {
+			t.Fatal(err)
+		}
+		var body bytes.Buffer
+		mw := multipart.NewWriter(&body)
+		fw, err := mw.CreateFormFile("photo", "gc-walk.jpg")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = fw.Write(raw.Bytes())
+		_ = mw.Close()
+		req, err := http.NewRequest(http.MethodPost, "/admin/photos", bytes.NewReader(body.Bytes()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.Header.Set("Authorization", "Bearer "+harness.token)
+		rec := httptest.NewRecorder()
+		harness.h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("upload code %d: %s", rec.Code, rec.Body)
+		}
+		var got store.AdminPhoto
+		_ = json.Unmarshal(rec.Body.Bytes(), &got)
+
+		// the object is real and served
+		resp, err := http.Get(got.Src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("uploaded object code %d", resp.StatusCode)
+		}
+
+		// a sibling row citing the SAME content-addressed object
+		var sib int64
+		if err := harness.pool.QueryRow(context.Background(),
+			`INSERT INTO photos(src, alt, width, height, sort, featured, gallery)
+			 VALUES ($1, 'gc sibling', 32, 32, 999, FALSE, FALSE) RETURNING id`, got.Src).Scan(&sib); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			_, _ = harness.pool.Exec(context.Background(), `DELETE FROM photos WHERE id = $1`, sib)
+		}()
+
+		// delete the FIRST owner: row gone, object ALIVE (the sibling keeps it)
+		harness.mustOK(http.MethodDelete, "/admin/photos/"+got.ID, "")
+		if code, _ := harness.admin(http.MethodGet, "/admin/photos/"+got.ID, ""); code != http.StatusNotFound {
+			t.Fatalf("deleted row code %d", code)
+		}
+		resp, err = http.Get(got.Src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("shared object deleted with its first owner (sibling stranded): %d", resp.StatusCode)
+		}
+
+		// delete the LAST owner: the object goes with it
+		harness.mustOK(http.MethodDelete, "/admin/photos/"+strconv.FormatInt(sib, 10), "")
+		resp, err = http.Get(got.Src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("last owner deleted but the object survived: %d", resp.StatusCode)
+		}
+	})
+
 	// ---- photos ----
 	t.Run("photo lifecycle on the suite's OWN row (siblings untouched)", func(t *testing.T) {
 		defer func() {
