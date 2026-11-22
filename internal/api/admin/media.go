@@ -31,11 +31,14 @@ func (h *Handler) uploadPhoto(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 20 MiB")
 		return
 	}
-	photo, err := h.svc.UploadPhoto(r.Context(), header.Filename, raw)
+	photo, err := h.svc.UploadPhoto(r.Context(), header.Filename, raw, []byte(r.FormValue("exif")))
 	var rejected *adminsvc.UploadRejected
+	var exifRejected *adminsvc.ExifRejected
 	switch {
 	case err == nil:
 		httpx.WriteJSON(w, http.StatusCreated, photo)
+	case errors.As(err, &exifRejected):
+		httpx.WriteErr(w, http.StatusBadRequest, "field 'exif' is not valid JSON")
 	case errors.Is(err, adminsvc.ErrNoMediaStore):
 		httpx.WriteErr(w, http.StatusServiceUnavailable, err.Error())
 	case errors.As(err, &rejected):

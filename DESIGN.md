@@ -325,7 +325,15 @@ POST   /admin/photos  (multipart)          → relay to object store (§5): prob
                                              + strip EXIF server-side BEFORE the
                                              object is public, return Photo with the
                                              absolute CDN src (§1 shape); fresh
-                                             photos: gallery=false, collection=null
+                                             photos: gallery=false, collection=null.
+                                             OPTIONAL 'exif' field (Round B
+                                             2026-11-22): mellon's client-side capture
+                                             (exifr, curated keys) — lumen stores ONLY
+                                             the allowlisted subset (takenAt/camera/
+                                             lens/shutter/iso/aperture; GPS denied by
+                                             CONSTRUCTION — not a key) as photos.exif
+                                             jsonb; malformed = 400; strip promise
+                                             unchanged (lumen never parses metadata)
 PATCH  /admin/photos/:id                   → curation metadata {alt?, collection?,
                                              gallery?}; last-write-wins (photos carry
                                              no rev — single-author album truth)

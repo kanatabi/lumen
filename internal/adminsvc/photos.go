@@ -2,7 +2,9 @@ package adminsvc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/kanatabi/lumen/internal/httpx"
 	"github.com/kanatabi/lumen/internal/media"
@@ -115,6 +117,59 @@ func (s *Service) DeletePhoto(ctx context.Context, id int64) error {
 	return nil
 }
 
+// photoExifKeys — the CURATED capture set (owner sketch, Round B
+// 2026-11-22). GPS is NOT a key: the privacy promise ("GPS never stored")
+// is denied by CONSTRUCTION — an allowlist, not a denylist (a denylist
+// grows typos; an allowlist grows nothing).
+var photoExifKeys = map[string]string{
+	"takenAt":  "string",
+	"camera":   "string",
+	"lens":     "string",
+	"shutter":  "string",
+	"iso":      "number",
+	"aperture": "number",
+}
+
+// SanitizePhotoExif keeps ONLY the curated keys with the expected JSON
+// shape (encoding/json numbers = float64, its only shape); everything
+// else — unknown keys, wrong types, empty strings, the GPS family —
+// drops. Malformed JSON is an error (the 400 story); an empty or fully-
+// dropped set stores NULL (the panel's empty state).
+func SanitizePhotoExif(raw []byte) (map[string]any, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var full map[string]any
+	if err := json.Unmarshal(raw, &full); err != nil {
+		return nil, fmt.Errorf("exif field: %w", err)
+	}
+	out := make(map[string]any, len(photoExifKeys))
+	for k, want := range photoExifKeys {
+		v, ok := full[k]
+		if !ok {
+			continue
+		}
+		switch want {
+		case "string":
+			s, ok := v.(string)
+			if !ok || s == "" {
+				continue
+			}
+			out[k] = s
+		case "number":
+			f, ok := v.(float64)
+			if !ok {
+				continue
+			}
+			out[k] = f
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
 // UploadPhoto is the §5 relay as a use case: probe (decode-and-REBUILD —
 // EXIF dies by construction), content-addressed key SCOPED by the config
 // media prefix (LUMEN_MEDIA_PREFIX: applied ONCE here so the object put,
@@ -122,10 +177,17 @@ func (s *Service) DeletePhoto(ctx context.Context, id int64) error {
 // base+prefix+key stays coherent by construction), PUT BEFORE anything
 // is public, then row + GC ledger + index job in one transaction. The
 // handler keeps the HTTP shape (multipart, MaxBytesReader); everything
-// else is here.
-func (s *Service) UploadPhoto(ctx context.Context, filename string, raw []byte) (store.AdminPhoto, error) {
+// else is here. The round's addition (Round B, 2026-11-22): exifRaw is
+// mellon's CLIENT-SIDE capture (exifr, curated fields) — lumen never
+// parses image metadata (the strip promise is test-pinned), it only
+// ALLOWLISTS what it is willing to store (GPS cannot pass: not a key).
+func (s *Service) UploadPhoto(ctx context.Context, filename string, raw, exifRaw []byte) (store.AdminPhoto, error) {
 	if s.media == nil {
 		return store.AdminPhoto{}, ErrNoMediaStore
+	}
+	exif, err := SanitizePhotoExif(exifRaw)
+	if err != nil {
+		return store.AdminPhoto{}, &ExifRejected{Err: err}
 	}
 	processed, err := media.Process(raw)
 	if err != nil {
@@ -148,7 +210,7 @@ func (s *Service) UploadPhoto(ctx context.Context, filename string, raw []byte) 
 	}
 	src := media.URL(s.mediaCDNBase, s.mediaEndpoint, s.mediaBucket, processed.Key)
 	row, err := s.store.CreateAdminPhotoFromUpload(ctx, src, filenameToAlt(filename),
-		processed.Width, processed.Height, processed.SHA256, processed.Key, s.queue)
+		processed.Width, processed.Height, processed.SHA256, processed.Key, exif, s.queue)
 	if err != nil {
 		return store.AdminPhoto{}, err
 	}
@@ -160,6 +222,14 @@ type UploadRejected struct{ Err error }
 
 func (e *UploadRejected) Error() string { return e.Err.Error() }
 func (e *UploadRejected) Unwrap() error { return e.Err }
+
+// ExifRejected wraps a malformed exif field: a CLIENT bug (mellon formats
+// the field), so a 400 — never a silent swallow (visible honesty beats
+// ignored input).
+type ExifRejected struct{ Err error }
+
+func (e *ExifRejected) Error() string { return e.Err.Error() }
+func (e *ExifRejected) Unwrap() error { return e.Err }
 
 // filenameToAlt: the filename-derived starting alt — the author edits it on
 // the detail page (mellon's picker names uploads; truth stays human).

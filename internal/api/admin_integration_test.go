@@ -399,6 +399,12 @@ func TestAdminLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, _ = fw.Write(raw.Bytes())
+		// Round B: the client-side EXIF capture rides the multipart — with
+		// GPS planted, the walk proves the allowlist's promise on the REAL
+		// row (GPS never stored, by construction).
+		if err := mw.WriteField("exif", `{"takenAt":"2026:11:22 10:00:00","camera":"Integration Cam","iso":640,"aperture":2.8,"GPSLatitude":46.5,"GPSLongitude":6.6}`); err != nil {
+			t.Fatal(err)
+		}
 		_ = mw.Close()
 
 		code, res := harness.do(http.MethodPost, "/admin/photos", body.String(), harness.token)
@@ -412,6 +418,14 @@ func TestAdminLifecycle(t *testing.T) {
 			}
 			if got.Alt != "integration-upload" || got.Gallery {
 				t.Fatalf("fresh upload defaults wrong: %+v", got)
+			}
+			if got.Exif["camera"] != "Integration Cam" || got.Exif["iso"] != float64(640) {
+				t.Fatalf("curated exif not stored: %+v", got.Exif)
+			}
+			for k := range got.Exif {
+				if strings.HasPrefix(strings.ToLower(k), "gps") {
+					t.Fatalf("GPS key %q stored — the promise is broken", k)
+				}
 			}
 			t.Cleanup(func() {
 				_, _ = harness.admin(http.MethodDelete, "/admin/photos/"+got.ID, "")

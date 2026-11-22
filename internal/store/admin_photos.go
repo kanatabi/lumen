@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -13,20 +14,24 @@ import (
 )
 
 // AdminPhoto mirrors mellon's AdminPhoto — id is a STRING on the wire (the
-// contract), BIGSERIAL here (the key); serialization bridges.
+// contract), BIGSERIAL here (the key); serialization bridges. Exif = the
+// upload-time capture's curated subset (Round B 2026-11-22); NULL on the
+// wire = pre-capture uploads — the panel's honest empty state.
 type AdminPhoto struct {
-	ID         string  `json:"id"`
-	Src        string  `json:"src"`
-	Alt        string  `json:"alt"`
-	Width      int     `json:"width"`
-	Height     int     `json:"height"`
-	Gallery    bool    `json:"gallery"`
-	Collection *string `json:"collection"`
-	CreatedAt  string  `json:"createdAt"`
+	ID         string         `json:"id"`
+	Src        string         `json:"src"`
+	Alt        string         `json:"alt"`
+	Width      int            `json:"width"`
+	Height     int            `json:"height"`
+	Gallery    bool           `json:"gallery"`
+	Collection *string        `json:"collection"`
+	Exif       map[string]any `json:"exif"`
+	CreatedAt  string         `json:"createdAt"`
 }
 
 type PhotoDocRow struct {
 	Doc     search.PhotoDoc
+	Exif    map[string]any
 	Created time.Time
 }
 
@@ -34,18 +39,25 @@ func (r PhotoDocRow) Admin() AdminPhoto {
 	return AdminPhoto{
 		ID:  strconv.FormatInt(r.Doc.ID, 10),
 		Src: r.Doc.Src, Alt: r.Doc.Alt, Width: r.Doc.Width, Height: r.Doc.Height,
-		Gallery: r.Doc.Gallery, Collection: r.Doc.Collection, CreatedAt: iso(r.Created),
+		Gallery: r.Doc.Gallery, Collection: r.Doc.Collection, Exif: r.Exif,
+		CreatedAt: iso(r.Created),
 	}
 }
 
 func itoa(i int) string { return strconv.Itoa(i) }
 
-const photoCols = `id, src, alt, width, height, gallery, featured, sort, collection, created_at`
+const photoCols = `id, src, alt, width, height, gallery, featured, sort, collection, exif, created_at`
 
 func scanPhotoRow(row pgx.Row) (PhotoDocRow, error) {
 	var r PhotoDocRow
+	var exifBytes []byte
 	err := row.Scan(&r.Doc.ID, &r.Doc.Src, &r.Doc.Alt, &r.Doc.Width, &r.Doc.Height,
-		&r.Doc.Gallery, &r.Doc.Featured, &r.Doc.Sort, &r.Doc.Collection, &r.Created)
+		&r.Doc.Gallery, &r.Doc.Featured, &r.Doc.Sort, &r.Doc.Collection, &exifBytes, &r.Created)
+	if err == nil && len(exifBytes) > 0 {
+		if err := json.Unmarshal(exifBytes, &r.Exif); err != nil {
+			return r, err
+		}
+	}
 	return r, err
 }
 
@@ -231,14 +243,16 @@ func (g *PG) UpdateAdminPhoto(ctx context.Context, id int64, in PhotoPatch, enqu
 // CreateAdminPhotoFromUpload lands an uploaded, sanitized image in the
 // library + the GC ledger (media_assets) + the index job — ONE transaction
 // (§5: nothing becomes public before the probe; §8: fresh photos are
-// gallery=false, collection=null — surfacing is a deliberate act).
-func (g *PG) CreateAdminPhotoFromUpload(ctx context.Context, src, alt string, width, height int, sha, key string, enqueuer indexEnqueuer) (PhotoDocRow, error) {
+// gallery=false, collection=null — surfacing is a deliberate act). Exif
+// arrives ALREADY SANITIZED (adminsvc.SanitizePhotoExif — the allowlist
+// ran upstream); nil stores SQL NULL.
+func (g *PG) CreateAdminPhotoFromUpload(ctx context.Context, src, alt string, width, height int, sha, key string, exif map[string]any, enqueuer indexEnqueuer) (PhotoDocRow, error) {
 	var id int64
 	err := pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx,
-			`INSERT INTO photos(src, alt, width, height, sort, featured, gallery, collection)
-			 VALUES ($1,$2,$3,$4,(SELECT COALESCE(MAX(sort),0)+1 FROM photos),FALSE,FALSE,NULL)
-			 RETURNING id`, src, alt, width, height).Scan(&id); err != nil {
+			`INSERT INTO photos(src, alt, width, height, sort, featured, gallery, collection, exif)
+			 VALUES ($1,$2,$3,$4,(SELECT COALESCE(MAX(sort),0)+1 FROM photos),FALSE,FALSE,NULL,$5)
+			 RETURNING id`, src, alt, width, height, exif).Scan(&id); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx,
