@@ -186,8 +186,17 @@ manual loop; MinIO withdrew its public images and LocalStack v4+ demands an auth
 token (2025's registry rug-pull), and the relay speaks real SigV4 S3 regardless:
 HUMAN-GATE #9 stays a VALUES decision (Bao config), never an architecture one.
 Formats pinned jpeg|png, loud 415 elsewhere (webp awaits a trusted encoder —
-recorded, not silently dropped); 20 MiB cap; the content type is what the DECODE
-says, never the client's header.
+recorded, not silently dropped); the content type is what the DECODE says,
+never the client's header. Caps (2026-11-23): **100 MB** on the multipart body
+(413 copy: `upload exceeds 100 MB`, derived from `media.MaxBytes` via
+`MaxLabel()` — one constant, one message) and a **60 MP pixel guard** —
+`image.DecodeConfig` runs BEFORE the decode (header-only: no pixels
+allocated yet), and a header declaring more than 60 MP dies with 415 copy
+`W×H is N MP — the cap is 60 MP`. The division of labor: the byte cap
+bounds abuse, the pixel guard bounds MEMORY (a few MB of PNG can declare
+gigapixels; 60 MP ≈ 100 MB raw + ~90 MB decoded YCbCr + re-encode buffer,
+which fits the 768Mi pod limit — above that the decode heap is unbounded
+relative to file size); the pod budget is headroom, the guard is the bound.
 
 Diagrams, gallery photos, and thumbnails are owned here; API responses carry URLs
 **the FE renders unchanged** — the FE never assembles media paths (unchanged rule,
@@ -333,7 +342,12 @@ POST   /admin/photos  (multipart)          → relay to object store (§5): prob
                                              lens/shutter/iso/aperture; GPS denied by
                                              CONSTRUCTION — not a key) as photos.exif
                                              jsonb; malformed = 400; strip promise
-                                             unchanged (lumen never parses metadata)
+                                             unchanged (lumen never parses metadata).
+                                             Caps (2026-11-23): 100 MB body → 413
+                                             ("upload exceeds 100 MB"); >60 MP header
+                                             → 415 ("W×H is N MP — the cap is 60 MP",
+                                             DecodeConfig probe BEFORE the decode —
+                                             the OOM bound; 768Mi is the headroom)
 PATCH  /admin/photos/:id                   → curation metadata {alt?, collection?,
                                              gallery?}; last-write-wins (photos carry
                                              no rev — single-author album truth)

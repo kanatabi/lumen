@@ -6,6 +6,7 @@ package admin
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -28,7 +29,7 @@ func (h *Handler) uploadPhoto(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	raw, err := io.ReadAll(io.LimitReader(file, media.MaxBytes+1))
 	if err != nil || len(raw) > media.MaxBytes {
-		httpx.WriteErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 20 MiB")
+		httpx.WriteErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("upload exceeds %s", media.MaxLabel()))
 		return
 	}
 	photo, err := h.svc.UploadPhoto(r.Context(), header.Filename, raw, []byte(r.FormValue("exif")))

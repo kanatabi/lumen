@@ -2,6 +2,8 @@ package media
 
 import (
 	"bytes"
+	"encoding/binary"
+	"hash/crc32"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -62,6 +64,56 @@ func TestProcessRejectsNonImages(t *testing.T) {
 		if _, err := Process(junk); err == nil {
 			t.Fatalf("junk accepted: %q", junk)
 		}
+	}
+}
+
+// hugePNG declares gigantic dimensions in its IHDR and carries no IDAT —
+// png.DecodeConfig reads only the header, which is exactly what the guard
+// must confront WITHOUT allocating pixels first (a real 100 MP fixture
+// would itself be the memory problem the guard exists to prevent).
+func hugePNG(width, height uint32) []byte {
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], width)
+	binary.BigEndian.PutUint32(ihdr[4:8], height)
+	ihdr[8] = 8  // bit depth
+	ihdr[9] = 6  // color type: RGBA
+	ihdr[12] = 0 // no interlace
+
+	var out bytes.Buffer
+	out.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) // signature
+	var chunk bytes.Buffer
+	binary.Write(&chunk, binary.BigEndian, uint32(len(ihdr)))
+	chunk.WriteString("IHDR")
+	chunk.Write(ihdr)
+	binary.Write(&chunk, binary.BigEndian, crc32.ChecksumIEEE(chunk.Bytes()[4:]))
+	out.Write(chunk.Bytes())
+	return out.Bytes()
+}
+
+// The OOM guard: the byte cap bounds abuse, the pixel cap bounds memory —
+// a header declaring >60 MP is refused on the DecodeConfig pass, before
+// image.Decode can spend the heap.
+func TestProcessRejectsOversizedPixels(t *testing.T) {
+	_, err := Process(hugePNG(20000, 20000)) // 400 MP declared, 40 bytes real
+	if err == nil {
+		t.Fatal("a 400 MP declaration was accepted — the decode spike is unguarded")
+	}
+	for _, want := range []string{"20000×20000", "400 MP", "the cap is 60 MP"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q must carry %q", err, want)
+		}
+	}
+	// the boundary itself: a normal image sails through unchanged
+	if _, err := Process(jpegBytes(320, 200)); err != nil {
+		t.Fatalf("normal image rejected by the guard: %v", err)
+	}
+}
+
+// MaxLabel is the handler's copy source: the 413 text must DERIVE from the
+// constant, so bumping MaxBytes moves the message without a code edit.
+func TestMaxLabel(t *testing.T) {
+	if got := MaxLabel(); got != "100 MB" {
+		t.Fatalf("MaxLabel() = %q, want %q", got, "100 MB")
 	}
 }
 

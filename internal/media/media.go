@@ -24,7 +24,26 @@ import (
 	"github.com/kanatabi/lumen/internal/obs"
 )
 
-const MaxBytes = 20 << 20 // 20 MiB — generous for originals, hostile to abuse
+// 100 MB cap (2026-11-23: camera-originals friendly; the 60 MP pixel guard
+// below bounds the decode spike, not this number) — generous for originals,
+// hostile to abuse.
+const MaxBytes = 100 << 20
+
+// MaxPixels is the decode-side OOM guard: a 60 MP image ≈ 100 MB of raw
+// JPEG + ~90 MB of decoded YCbCr + the re-encode buffer — together that
+// fits the 768Mi pod limit with headroom. Above 60 MP the decode heap is
+// unbounded relative to file size (a few MB of PNG can declare gigapixels),
+// which is why the byte cap alone can never protect the pod: DecodeConfig
+// reads only the header, so the spike is refused BEFORE a single pixel
+// is allocated.
+const MaxPixels = 60_000_000
+
+// MaxLabel renders the byte cap for HTTP-facing copy — the handler derives
+// its 413 message from this, never hardcoding a number (one constant, one
+// place to bump).
+func MaxLabel() string {
+	return fmt.Sprintf("%d MB", MaxBytes/(1<<20))
+}
 
 // Processed is the sanitized artifact: re-encoded bytes (EXIF and every
 // other ancillary chunk gone with them by construction), natural dims,
@@ -48,6 +67,18 @@ type Processed struct {
 func Process(raw []byte) (Processed, error) {
 	if len(raw) == 0 {
 		return Processed{}, fmt.Errorf("empty upload")
+	}
+	// DecodeConfig reads ONLY the header — dims arrive without allocating a
+	// single pixel, so the pixel guard below fires before the decode spike.
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil {
+		return Processed{}, fmt.Errorf("undecodable image: %w", err)
+	}
+	if pixels := cfg.Width * cfg.Height; pixels > MaxPixels {
+		// round MP half-up, integer math only
+		megapixels := (pixels + 500_000) / 1_000_000
+		return Processed{}, fmt.Errorf("%d×%d is %d MP — the cap is %d MP",
+			cfg.Width, cfg.Height, megapixels, MaxPixels/1_000_000)
 	}
 	decoded, format, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
