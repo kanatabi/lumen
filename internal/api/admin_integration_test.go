@@ -232,6 +232,125 @@ func (a *adminHarness) drain() {
 // answers its own 403 (bao → secrets:admin, users → users:manage, the
 // desks → content:manage), and a scope mutation BUMPS token_version — the
 // demoted user's next request is dead within seconds, never 12h.
+// TestUserLifecycle is the second RBAC cut end-to-end: the lifecycle
+// verbs against a real database — create scoped, disable (the live token
+// dies AND login answers 403 with the undo named), enable, force-change
+// (the NEXT request 428s), revoke-sessions (the live token dies), delete
+// (404 afterward; self-delete and the last users:manage holder REFUSE).
+func TestUserLifecycle(t *testing.T) {
+	if os.Getenv("LUMEN_INTEGRATION") == "" {
+		t.Skip("LUMEN_INTEGRATION unset")
+	}
+	harness := newAdminHarness(t)
+	ctx := context.Background()
+
+	// 1. create with exact scopes
+	code, res := harness.admin("POST", "/admin/users",
+		`{"username":"lc-ed","scopes":["content:manage"]}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %s", code, res)
+	}
+	var created struct {
+		ID           string   `json:"id"`
+		TempPassword string   `json:"tempPassword"`
+		Scopes       []string `json:"scopes"`
+	}
+	if err := json.Unmarshal(res, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" || len(created.Scopes) != 1 {
+		t.Fatalf("create shape: %s", res)
+	}
+	t.Cleanup(func() {
+		_, _ = harness.pool.Exec(ctx, `DELETE FROM users WHERE username='lc-ed'`)
+	})
+
+	// first login + the forced change (the temp's flow)
+	if _, res := harness.do("POST", "/admin/session",
+		`{"username":"lc-ed","password":"`+created.TempPassword+`"}`, ""); res == nil {
+		t.Fatal("login failed")
+	}
+	code, _ = harness.do("POST", "/admin/session/password",
+		`{"current":"`+created.TempPassword+`","next":"lc-ed-chosen-1"}`, harness.login("lc-ed", created.TempPassword))
+	if code != http.StatusOK {
+		t.Fatalf("temp change: %d", code)
+	}
+	edTok := harness.login("lc-ed", "lc-ed-chosen-1")
+
+	// 2. disable: the live token dies AND the login door names the undo
+	if code, res := harness.admin("POST", "/admin/users/lc-ed/disable", ""); code != http.StatusOK {
+		t.Fatalf("disable: %d %s", code, res)
+	}
+	if code, res := harness.do("GET", "/admin/posts", "", edTok); code != http.StatusUnauthorized {
+		t.Fatalf("disabled account's live token: %d %s", code, res)
+	}
+	if code, res := harness.do("POST", "/admin/session",
+		`{"username":"lc-ed","password":"lc-ed-chosen-1"}`, ""); code != http.StatusForbidden ||
+		!strings.Contains(string(res), "account disabled") {
+		t.Fatalf("disabled login: %d %s", code, res)
+	}
+
+	// 3. enable: a fresh login works
+	if code, _ := harness.admin("POST", "/admin/users/lc-ed/enable", ""); code != http.StatusOK {
+		t.Fatalf("enable: %d", code)
+	}
+	edTok = harness.login("lc-ed", "lc-ed-chosen-1")
+
+	// 4. force-change: the NEXT request 428s (the live session completes it)
+	if code, _ := harness.admin("POST", "/admin/users/lc-ed/force-change", ""); code != http.StatusOK {
+		t.Fatalf("force-change: %d", code)
+	}
+	if code, _ := harness.do("GET", "/admin/posts", "", edTok); code != http.StatusPreconditionRequired {
+		t.Fatalf("forced 428: %d", code)
+	}
+	if code, _ := harness.do("POST", "/admin/session/password",
+		`{"current":"lc-ed-chosen-1","next":"lc-ed-chosen-2"}`, edTok); code != http.StatusOK {
+		t.Fatalf("the forced change completes via the live session: %d", code)
+	}
+	edTok = harness.login("lc-ed", "lc-ed-chosen-2")
+
+	// 5. revoke-sessions: the live token dies, the password does not
+	if code, _ := harness.admin("POST", "/admin/users/lc-ed/revoke-sessions", ""); code != http.StatusOK {
+		t.Fatalf("revoke-sessions: %d", code)
+	}
+	if code, _ := harness.do("GET", "/admin/posts", "", edTok); code != http.StatusUnauthorized {
+		t.Fatalf("revoked session: %d", code)
+	}
+	edTok = harness.login("lc-ed", "lc-ed-chosen-2")
+
+	// 6. the delete guards: self-deletion is refused
+	if code, res := harness.admin("DELETE", "/admin/users/fzr-test", ""); code != http.StatusBadRequest ||
+		!strings.Contains(string(res), "own account") {
+		t.Fatalf("self-delete: %d %s", code, res)
+	}
+
+	// 7. the lockout guard: demote the admin, then deleting the LAST
+	//    users:manage holder is 409 — the counts ride the copy
+	if code, _ := harness.admin("PATCH", "/admin/users/fzr-test/scopes",
+		`{"scopes":["content:manage"]}`); code != http.StatusOK {
+		t.Fatalf("demote admin: %d", code)
+	}
+	adminTok := harness.login("fzr-test", "integration-pw") // the bump killed the old token
+	if code, res := harness.admin("DELETE", "/admin/users/lc-ed", ""); code != http.StatusConflict ||
+		!strings.Contains(string(res), "last users:manage holder") {
+		t.Fatalf("last-manager delete: %d %s", code, res)
+	}
+	// 8. restore the admin's grant, THEN the delete works and is terminal
+	if code, _ := harness.admin("PATCH", "/admin/users/fzr-test/scopes",
+		`{"scopes":["content:manage","secrets:admin","users:manage","settings:manage"]}`); code != http.StatusOK {
+		t.Fatalf("restore admin: %d", code)
+	}
+	adminTok = harness.login("fzr-test", "integration-pw")
+	if code, _ := harness.admin("DELETE", "/admin/users/lc-ed", ""); code != http.StatusOK {
+		t.Fatalf("delete: %d", code)
+	}
+	if code, _ := harness.do("POST", "/admin/session",
+		`{"username":"lc-ed","password":"lc-ed-chosen-2"}`, ""); code != http.StatusUnauthorized {
+		t.Fatalf("deleted account login: %d", code)
+	}
+	_ = adminTok
+}
+
 func TestRBACScopes(t *testing.T) {
 	if os.Getenv("LUMEN_INTEGRATION") == "" {
 		t.Skip("LUMEN_INTEGRATION unset")
