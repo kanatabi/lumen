@@ -49,7 +49,7 @@ func (s *Service) Login(ctx context.Context, username, password, ip string) (str
 		}
 		return "", 0, Principal{}, err
 	}
-	token, expiresIn, err := session.MintSession(s.jwtSecret, username, auth.TokenVersion)
+	token, expiresIn, err := session.MintSession(s.jwtSecret, username, auth.TokenVersion, auth.Scopes)
 	if err != nil {
 		return "", 0, Principal{}, err
 	}

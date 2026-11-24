@@ -226,6 +226,111 @@ func (a *adminHarness) drain() {
 	a.t.Fatal("queue never drained")
 }
 
+// TestRBACScopes is the spine's end-to-end proof (the RBAC round): the
+// catalog is PORTAL-MANAGED (add → listed → delete-refused-while-held →
+// delete-after-unassign), creation grants EXACT scopes, every surface
+// answers its own 403 (bao → secrets:admin, users → users:manage, the
+// desks → content:manage), and a scope mutation BUMPS token_version — the
+// demoted user's next request is dead within seconds, never 12h.
+func TestRBACScopes(t *testing.T) {
+	if os.Getenv("LUMEN_INTEGRATION") == "" {
+		t.Skip("LUMEN_INTEGRATION unset")
+	}
+	harness := newAdminHarness(t)
+	ctx := context.Background()
+
+	// 1. the catalog round-trip: onboard demo:read, see it listed
+	code, res := harness.admin("POST", "/admin/scopes",
+		`{"scope":"demo:read","description":"the demo app's read surface"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("catalog add: %d %s", code, res)
+	}
+	t.Cleanup(func() {
+		_, _ = harness.pool.Exec(ctx, `DELETE FROM scopes WHERE scope='demo:read'`)
+		_, _ = harness.pool.Exec(ctx, `DELETE FROM users WHERE username='rbac-ed'`)
+	})
+	code, res = harness.admin("GET", "/admin/scopes", "")
+	if code != http.StatusOK || !strings.Contains(string(res), "demo:read") {
+		t.Fatalf("catalog list lost the new scope: %d %s", code, res)
+	}
+
+	// 2. creation grants EXACT scopes (roles are gone): the picker IS the
+	//    grant; the temp rides the once-only reveal
+	code, res = harness.admin("POST", "/admin/users",
+		`{"username":"rbac-ed","scopes":["demo:read"]}`)
+	if code != http.StatusCreated {
+		t.Fatalf("scoped create: %d %s", code, res)
+	}
+	var created struct {
+		TempPassword string `json:"tempPassword"`
+	}
+	if err := json.Unmarshal(res, &created); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. first login: must_change armed (428 escape semantics unchanged)
+	code, res = harness.do("POST", "/admin/session",
+		`{"username":"rbac-ed","password":"`+created.TempPassword+`"}`, "")
+	if code != http.StatusOK {
+		t.Fatalf("scoped user login: %d %s", code, res)
+	}
+	var login struct {
+		Token  string   `json:"token"`
+		Scopes []string `json:"scopes"`
+	}
+	if err := json.Unmarshal(res, &login); err != nil {
+		t.Fatal(err)
+	}
+	if len(login.Scopes) != 1 || login.Scopes[0] != "demo:read" {
+		t.Fatalf("login scopes: %v", login.Scopes)
+	}
+	// clear the forced change once (the flow's destination)
+	if code, _ := harness.do("POST", "/admin/session/password",
+		`{"current":"`+created.TempPassword+`","next":"rbac-ed-chosen-1"}`, login.Token); code != http.StatusOK {
+		t.Fatalf("forced change: %d", code)
+	}
+	edTok := harness.login("rbac-ed", "rbac-ed-chosen-1")
+
+	// 4. the 403 matrix: every surface names its own scope
+	for _, tc := range []struct {
+		path, want string
+	}{
+		{"/admin/bao/paths", "secrets:admin required"},
+		{"/admin/users", "users:manage required"},
+		{"/admin/posts", "content:manage required"},
+	} {
+		if code, res := harness.do("GET", tc.path, "", edTok); code != http.StatusForbidden ||
+			!strings.Contains(string(res), tc.want) {
+			t.Fatalf("%s → %d %s, want 403 %q", tc.path, code, res, tc.want)
+		}
+	}
+
+	// 5. delete-refusal: demo:read is held — the catalog refuses with the
+	//    counts (never a silent cascade)
+	if code, res := harness.admin("DELETE", "/admin/scopes/demo:read", ""); code != http.StatusConflict ||
+		!strings.Contains(string(res), "1 user") {
+		t.Fatalf("delete-while-held: %d %s", code, res)
+	}
+
+	// 6. the demotion: PATCH scopes to none — token_version bumps, the
+	//    live token dies within the request, not 12h
+	if code, res := harness.admin("PATCH", "/admin/users/rbac-ed/scopes", `{"scopes":[]}`); code != http.StatusOK {
+		t.Fatalf("scopes patch: %d %s", code, res)
+	}
+	if code, res := harness.do("GET", "/admin/session", "", edTok); code != http.StatusUnauthorized {
+		t.Fatalf("demoted token must be dead immediately: %d %s", code, res)
+	}
+
+	// 7. unassign → delete works (the catalog is clean again)
+	if code, _ := harness.admin("DELETE", "/admin/scopes/demo:read", ""); code != http.StatusOK {
+		t.Fatalf("delete after unassign: %d", code)
+	}
+	code, res = harness.admin("GET", "/admin/scopes", "")
+	if strings.Contains(string(res), "demo:read") {
+		t.Fatalf("deleted scope still listed: %s", res)
+	}
+}
+
 func TestAdminLifecycle(t *testing.T) {
 	harness := newAdminHarness(t)
 

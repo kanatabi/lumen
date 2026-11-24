@@ -34,9 +34,15 @@ var Matrix = []MatrixRow{
 	{"GET", "/admin/session", true, false},           // whoami
 	{"DELETE", "/admin/session", true, false},        // logout = token_version bump
 	{"POST", "/admin/session/password", true, false}, // guided change (428 escape)
-	{"GET", "/admin/users", true, false},             // users CRUD: admin role gate in the local authenticator
+	// users + the scope catalog: the RBAC spine — the mgmt group gates on
+	// the users:manage scope (the local authenticator verifies the bearer)
+	{"GET", "/admin/users", true, false},
 	{"POST", "/admin/users", true, false},
 	{"POST", "/admin/users/{username}/reset-password", true, false},
+	{"PATCH", "/admin/users/{username}/scopes", true, false},
+	{"GET", "/admin/scopes", true, false},
+	{"POST", "/admin/scopes", true, false},
+	{"DELETE", "/admin/scopes/{scope}", true, false},
 	{"GET", "/admin/bao/paths", true, false}, // §9 relay (registered when the plane is configured)
 	{"GET", "/admin/bao/summary", true, false},
 	{"POST", "/admin/bao/apps", true, false},

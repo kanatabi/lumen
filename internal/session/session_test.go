@@ -12,7 +12,7 @@ import (
 const secret = "0123456789abcdef0123456789abcdef"
 
 func TestMintParseRoundTrip(t *testing.T) {
-	tok, expiresIn, err := MintSession(secret, "fzr", 7)
+	tok, expiresIn, err := MintSession(secret, "fzr", 7, []string{"content:manage", "users:manage"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,10 +26,15 @@ func TestMintParseRoundTrip(t *testing.T) {
 	if claims.Subject != "fzr" || claims.TV != 7 || claims.ID == "" {
 		t.Fatalf("claims: %+v", claims)
 	}
+	// the grant rides the same read the auth check just passed (the spine
+	// ruling): scopes stamped at mint, refreshed by the next login
+	if len(claims.Scopes) != 2 || claims.Scopes[0] != "content:manage" {
+		t.Fatalf("scopes claim: %+v", claims.Scopes)
+	}
 }
 
 func TestWrongSecretFails(t *testing.T) {
-	tok, _, _ := MintSession(secret, "fzr", 1)
+	tok, _, _ := MintSession(secret, "fzr", 1, nil)
 	if _, err := Parse("different-secret-32-bytes-long!!!", tok); err == nil {
 		t.Fatal("verification must fail across secrets")
 	}

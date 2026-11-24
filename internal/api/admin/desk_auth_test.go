@@ -91,6 +91,13 @@ func TestDeskAuthenticatorTable(t *testing.T) {
 			intro:  &fakeIntro{id: authz.Identity{Username: "ed", Scopes: []string{scopes.ContentManage}, MustChange: true}},
 			wantSt: http.StatusPreconditionRequired,
 		},
+		{
+			// the desks ARE the content:manage surface — a verified bearer
+			// WITHOUT the scope is 403 (the spine's per-surface gate)
+			name:   "verified bearer without content:manage → 403",
+			intro:  &fakeIntro{id: authz.Identity{Username: "ed", Scopes: []string{scopes.UsersManage}}},
+			wantSt: http.StatusForbidden,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got adminsvc.Principal

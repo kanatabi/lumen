@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
@@ -15,12 +16,22 @@ import (
 	"github.com/kanatabi/lumen/internal/store"
 )
 
-// mountUsers sits inside the auth group; the authenticator already enforced
-// role=admin for every /admin/users path.
+// mountUsers + mountScopesCatalog sit inside the mgmt group: the
+// authenticator verified the bearer, requireScope verified users:manage.
 func (h *Handler) mountUsers(a chi.Router) {
 	a.Get("/users", h.listUsers)
 	a.Post("/users", h.createUser)
 	a.Post("/users/{username}/reset-password", h.resetUserPassword)
+	a.Patch("/users/{username}/scopes", h.updateUserScopes)
+}
+
+// mountScopesCatalog is the PORTAL-MANAGED scope registry (the spine
+// ruling: onboarding a scope never means manual SQL) — the assignable
+// vocabulary, users:manage-gated like the users it feeds.
+func (h *Handler) mountScopesCatalog(a chi.Router) {
+	a.Get("/scopes", h.listScopes)
+	a.Post("/scopes", h.addScope)
+	a.Delete("/scopes/{scope}", h.deleteScope)
 }
 
 func (h *Handler) setupStatus(w http.ResponseWriter, r *http.Request) {
@@ -145,4 +156,99 @@ func (h *Handler) whoami(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"username": p.Username, "id": p.ID, "scopes": p.Scopes, "mustChange": p.MustChange,
 	})
+}
+
+// updateUserScopes REPLACES the user's scope set (the admin's assignment
+// is the whole truth) and bumps token_version — the spine ruling: a
+// demotion is immediate; the user's other sessions die (re-login).
+func (h *Handler) updateUserScopes(w http.ResponseWriter, r *http.Request) {
+	username := chi.URLParam(r, "username")
+	var in struct {
+		Scopes []string `json:"scopes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		httpx.WriteErr(w, http.StatusBadRequest, "json body required")
+		return
+	}
+	tv, err := h.svc.UpdateScopes(r.Context(), username, in.Scopes)
+	switch {
+	case err == nil:
+		slog.Info("users.scopes.set", "user", username, "scopes", in.Scopes)
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"username": username, "scopes": in.Scopes, "tokenVersion": tv,
+		})
+	case errors.Is(err, adminsvc.ErrBadScope):
+		httpx.WriteErr(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, store.ErrNoSuchUser):
+		httpx.WriteErr(w, http.StatusNotFound, err.Error())
+	default:
+		slog.Error("users.scopes.error", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "internal error")
+	}
+}
+
+// listScopes reads the catalog — the users page's picker and the catalog
+// surface both read this.
+func (h *Handler) listScopes(w http.ResponseWriter, r *http.Request) {
+	catalog, err := h.svc.ListCatalog(r.Context())
+	if err != nil {
+		slog.Error("scopes.list.error", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, catalog)
+}
+
+// addScope onboards a scope into the catalog (the spine ruling: never
+// manual SQL). Grammar-checked here; existence is the DB's.
+func (h *Handler) addScope(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Scope       string `json:"scope"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		httpx.WriteErr(w, http.StatusBadRequest, "json body required")
+		return
+	}
+	created, err := h.svc.AddScope(r.Context(), in.Scope, in.Description)
+	switch {
+	case err == nil:
+		if created {
+			slog.Info("scopes.add", "scope", in.Scope)
+			httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+				"scope": in.Scope, "description": in.Description,
+			})
+			return
+		}
+		// re-adding an existing scope: the catalog is idempotent, the
+		// answer carries the row either way
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"scope": in.Scope, "description": in.Description,
+		})
+	case errors.Is(err, adminsvc.ErrBadScope):
+		httpx.WriteErr(w, http.StatusBadRequest, err.Error())
+	default:
+		slog.Error("scopes.add.error", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "internal error")
+	}
+}
+
+// deleteScope removes a scope from the catalog. lumen REFUSES while any
+// user holds it — the counts ride the refusal, the UI renders them.
+func (h *Handler) deleteScope(w http.ResponseWriter, r *http.Request) {
+	scope := chi.URLParam(r, "scope")
+	deleted, holders, err := h.svc.DeleteScope(r.Context(), scope)
+	switch {
+	case err == nil && deleted:
+		slog.Info("scopes.delete", "scope", scope)
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case err == nil && holders > 0:
+		httpx.WriteErr(w, http.StatusConflict,
+			"scope still assigned to "+strconv.Itoa(holders)+" user(s) — unassign first")
+	case err == nil:
+		httpx.WriteErr(w, http.StatusNotFound, "no such scope")
+	default:
+		slog.Error("scopes.delete.error", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "internal error")
+	}
 }

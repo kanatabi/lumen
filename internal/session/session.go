@@ -23,20 +23,26 @@ const TTLSeconds = 60 * 60 * 12 // 12h — owner ruling; re-login is the refresh
 
 type Claims struct {
 	TV int `json:"tv"` // users.token_version at mint; must still match
+	// Scopes is the permission set STAMPED AT MINT (the RBAC spine ruling):
+	// every scope mutation bumps token_version, so a claim can never
+	// outlive its truth — a stale claim means a dead token.
+	Scopes []string `json:"scopes,omitempty"`
 	jwt.RegisteredClaims
 }
 
-// MintSession signs a session for (username, current token_version).
-// The caller reads tv from the users row INSIDE the auth check it just
-// passed — tokens assert facts, not hopes.
-func MintSession(secret, username string, tokenVersion int) (string, int, error) {
+// MintSession signs a session for (username, current token_version, the
+// scope set read INSIDE the auth check it just passed) — tokens assert
+// facts, not hopes: identity, revocation handle and grants all ride the
+// same read.
+func MintSession(secret, username string, tokenVersion int, scopes []string) (string, int, error) {
 	now := time.Now().UTC()
 	nonce := make([]byte, 8)
 	if _, err := rand.Read(nonce); err != nil {
 		return "", 0, err
 	}
 	claims := Claims{
-		TV: tokenVersion,
+		TV:     tokenVersion,
+		Scopes: scopes,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   username,
 			IssuedAt:  jwt.NewNumericDate(now),

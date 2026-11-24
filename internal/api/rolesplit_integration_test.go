@@ -194,8 +194,15 @@ func TestRoleSplit_VerifyDoorAndCMSPlane(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("verify live token: %d %s", code, raw)
 	}
-	if res["username"] != "rolesplit-owner" || res["role"] != "admin" || res["mustChange"] != false || len(res) != 3 {
+	// the spine: the verify verdict carries id + scopes (the full catalog
+	// for the TOFU owner), role is GONE
+	if res["username"] != "rolesplit-owner" || res["id"] == nil ||
+		res["mustChange"] != false || len(res) != 4 {
 		t.Fatalf("verify 200 shape drift: %s", raw)
+	}
+	scopesList, ok := res["scopes"].([]any)
+	if !ok || len(scopesList) != 4 {
+		t.Fatalf("verify scopes drift: %s", raw)
 	}
 
 	// the admin plane has NO content surface (honest absence)

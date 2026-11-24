@@ -65,7 +65,7 @@ func (s *Service) RegisterFirstAdmin(ctx context.Context, username, password str
 	if err != nil || !exists {
 		return "", 0, Principal{}, store.ErrUsersExist // vanished mid-flight: treat as claimed
 	}
-	token, expiresIn, err := session.MintSession(s.jwtSecret, username, auth.TokenVersion)
+	token, expiresIn, err := session.MintSession(s.jwtSecret, username, auth.TokenVersion, auth.Scopes)
 	if err != nil {
 		return "", 0, Principal{}, err
 	}
@@ -169,4 +169,50 @@ func generateTempPassword() string {
 		b.WriteByte(byte('0' + int(pick(10).Int64())))
 	}
 	return b.String()
+}
+
+// ErrBadScope is the grammar refusal for scope assignment and catalog
+// onboarding (existence is the catalog's own question — the store's FK).
+var ErrBadScope = errors.New("scope must be <domain>:<verb>, lowercase")
+
+// UpdateScopes replaces the user's scope set and BUMPS token_version (the
+// spine ruling: a demotion is immediate, the user's other sessions die).
+// Grammar is checked here; catalog existence is the store's FK.
+func (s *Service) UpdateScopes(ctx context.Context, username string, granted []string) (int, error) {
+	for _, sc := range granted {
+		if !scopes.Valid(sc) {
+			return 0, ErrBadScope
+		}
+	}
+	tv, err := s.store.SetScopes(ctx, username, granted)
+	if err != nil {
+		return 0, err
+	}
+	return tv, nil
+}
+
+// ListCatalog reads the portal-managed scope registry.
+func (s *Service) ListCatalog(ctx context.Context) ([]store.CatalogEntry, error) {
+	return s.store.ListCatalog(ctx)
+}
+
+// AddScope onboards a scope (the spine ruling: the portal, never manual
+// SQL). Grammar is checked here; duplicate adds are idempotent at the store.
+func (s *Service) AddScope(ctx context.Context, scope, description string) (bool, error) {
+	if !scopes.Valid(scope) {
+		return false, ErrBadScope
+	}
+	if strings.TrimSpace(description) == "" {
+		return false, ErrBadScope
+	}
+	return s.store.AddScope(ctx, scope, description)
+}
+
+// DeleteScope removes a catalog scope; the store refuses while any user
+// holds it (the handler speaks the refusal with the holder counts).
+func (s *Service) DeleteScope(ctx context.Context, scope string) (bool, int, error) {
+	if !scopes.Valid(scope) {
+		return false, 0, ErrBadScope
+	}
+	return s.store.DeleteScope(ctx, scope)
 }

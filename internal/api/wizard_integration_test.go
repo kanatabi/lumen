@@ -105,8 +105,14 @@ func TestSetupWizardE2E(t *testing.T) {
 	// 2. first admin registers — auto-login, admin role, no forced change
 	code, res = wizCall(t, U+"/admin/setup/register", "POST", "",
 		map[string]string{"username": "itest-admin", "password": "the-owners-choice-1"})
-	if code != 201 || res["token"] == "" || res["role"] != "admin" || res["mustChange"] != false {
+	if code != 201 || res["token"] == "" || res["mustChange"] != false {
 		t.Fatalf("register: %d %v", code, res)
+	}
+	// the TOFU owner holds the FULL catalog (the spine ruling) — the
+	// register response is the first place it is visible
+	sc, _ := res["scopes"].([]any)
+	if len(sc) != 4 {
+		t.Fatalf("register scopes: %v", res["scopes"])
 	}
 	adminTok, _ := res["token"].(string)
 
@@ -121,16 +127,19 @@ func TestSetupWizardE2E(t *testing.T) {
 		t.Fatalf("claimed estate must report unclaimed=false: %v", res)
 	}
 
-	// 4. login carries role + mustChange for routing
+	// 4. login carries the scope set + mustChange for routing
 	code, res = wizCall(t, U+"/admin/session", "POST", "",
 		map[string]string{"username": "itest-admin", "password": "the-owners-choice-1"})
-	if code != 200 || res["role"] != "admin" || res["mustChange"] != false {
+	if code != 200 || res["mustChange"] != false {
 		t.Fatalf("login shape: %d %v", code, res)
+	}
+	if sc, _ := res["scopes"].([]any); len(sc) != 4 {
+		t.Fatalf("login scopes: %v", res["scopes"])
 	}
 
 	// 5. admin creates an editor: server temp password, once, well-formed
 	code, res = wizCall(t, U+"/admin/users", "POST", adminTok,
-		map[string]string{"username": "itest-ed", "role": "editor"})
+		map[string]any{"username": "itest-ed", "scopes": []string{"content:manage"}})
 	if code != 201 {
 		t.Fatalf("create user: %d %v", code, res)
 	}
@@ -144,7 +153,7 @@ func TestSetupWizardE2E(t *testing.T) {
 		map[string]string{"username": "itest-ed", "password": temp})
 	if code != 200 || res["mustChange"] != false {
 		// mustChange comes from the row: it is TRUE here — assert via whoami below
-		t.Logf("editor login: %d role=%v mc=%v", code, res["role"], res["mustChange"])
+		t.Logf("editor login: %d mc=%v", code, res["mustChange"])
 	}
 	if res["mustChange"] != true {
 		t.Fatalf("editor must arrive in forced-change state: %v", res)

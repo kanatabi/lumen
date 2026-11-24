@@ -18,7 +18,6 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -80,11 +79,21 @@ func (h *Handler) Mount(r chi.Router, planes role.Planes) {
 				auth.Get("/session", h.whoami)
 				auth.Delete("/session", h.logout)
 				auth.Post("/session/password", h.changePassword)
-				h.mountUsers(auth)
-				if h.svc.SecretsEnabled() {
-					h.mountSecrets(auth) // the §9 relay is a control-plane surface
-				}
 			})
+			// the management surfaces are the SPINE's scope gates: each
+			// group declares its requirement in code, middleware checks the
+			// principal's scopes (verified fresh per request)
+			a.Group(func(mgmt chi.Router) {
+				mgmt.Use(h.localAuthenticator, h.requireScope(scopes.UsersManage))
+				h.mountUsers(mgmt)
+				h.mountScopesCatalog(mgmt)
+			})
+			if h.svc.SecretsEnabled() {
+				a.Group(func(bao chi.Router) {
+					bao.Use(h.localAuthenticator, h.requireScope(scopes.SecretsAdmin))
+					h.mountSecrets(bao) // the §9 relay is a control-plane surface
+				})
+			}
 		}
 		if planes.Has(role.PlaneCMS) {
 			// ---- CONTENT PLANE (lumen-staging / lumen-production) ----
@@ -115,15 +124,24 @@ func (h *Handler) localAuthenticator(next http.Handler) http.Handler {
 			httpx.WriteErr(w, http.StatusPreconditionRequired, "password change required")
 			return
 		}
-		// users:manage gates the user administration surface (the RBAC
-		// spine): the local plane's own scope check, one gate before the
-		// handler table
-		if !slices.Contains(p.Scopes, scopes.UsersManage) && strings.HasPrefix(r.URL.Path, "/admin/users") {
-			httpx.WriteErr(w, http.StatusForbidden, "users:manage required")
-			return
-		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, p)))
 	})
+}
+
+// requireScope is the spine's per-surface gate: the principal arrives in
+// ctx from the authenticator; a missing scope is 403 with the scope's own
+// name (the UI renders lumen's copy verbatim — ghost-field).
+func (h *Handler) requireScope(scope string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			p, ok := principalFrom(r.Context())
+			if !ok || !slices.Contains(p.Scopes, scope) {
+				httpx.WriteErr(w, http.StatusForbidden, scope+" required")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // deskAuthenticator guards the cms plane's content routes. In a real cms
@@ -135,7 +153,9 @@ func (h *Handler) localAuthenticator(next http.Handler) http.Handler {
 // unchanged, which is the point of the "all" default.
 func (h *Handler) deskAuthenticator(next http.Handler) http.Handler {
 	if h.intro == nil {
-		return h.localAuthenticator(next)
+		// legacy "all": the desk gate rides the local authenticator, then
+		// the same content:manage requirement
+		return h.localAuthenticator(h.requireScope(scopes.ContentManage)(next))
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := h.intro.Verify(r.Context(), r.Header.Get("Authorization"))
@@ -149,6 +169,12 @@ func (h *Handler) deskAuthenticator(next http.Handler) http.Handler {
 				return
 			}
 			p := adminsvc.Principal{Username: id.Username, ID: id.ID, Scopes: id.Scopes, MustChange: id.MustChange}
+			// the desks ARE the content:manage surface — every desk request
+			// requires it, on both the intro and the legacy local paths
+			if !slices.Contains(p.Scopes, scopes.ContentManage) {
+				httpx.WriteErr(w, http.StatusForbidden, scopes.ContentManage+" required")
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, p)))
 		case errors.Is(err, authz.ErrInvalid):
 			httpx.WriteErr(w, http.StatusUnauthorized, "unauthorized")
