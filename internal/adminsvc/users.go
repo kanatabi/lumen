@@ -69,7 +69,7 @@ func (s *Service) RegisterFirstAdmin(ctx context.Context, username, password str
 	if err != nil {
 		return "", 0, Principal{}, err
 	}
-	return token, expiresIn, Principal{Username: username, ID: auth.ID, Scopes: auth.Scopes, MustChange: auth.MustChange}, nil
+	return token, expiresIn, Principal{Username: username, ID: auth.ID, Scopes: auth.Scopes, MustChange: auth.MustChange, Disabled: auth.Disabled}, nil
 }
 
 // ListUsers is admin-eyes-only (the transport enforces the gate; the service
@@ -175,6 +175,17 @@ func generateTempPassword() string {
 // onboarding (existence is the catalog's own question — the store's FK).
 var ErrBadScope = errors.New("scope must be <domain>:<verb>, lowercase")
 
+// ErrDisabled re-exports the store's disabled-account sentinel — the
+// handler maps it to 403 (distinct from invalid credentials: the undo is
+// the admin's re-enable, not a retype).
+var ErrDisabled = store.ErrDisabled
+
+// ErrSelfDelete / ErrLastManager re-export the delete guards (400 /
+// 409 at the edge — the counts ride the 409 copy).
+var ErrSelfDelete = store.ErrSelfDelete
+var ErrNoSuchUser = store.ErrNoSuchUser
+var ErrLastManager = store.ErrLastManager
+
 // UpdateScopes replaces the user's scope set and BUMPS token_version (the
 // spine ruling: a demotion is immediate, the user's other sessions die).
 // Grammar is checked here; catalog existence is the store's FK.
@@ -215,4 +226,54 @@ func (s *Service) DeleteScope(ctx context.Context, scope string) (bool, int, err
 		return false, 0, ErrBadScope
 	}
 	return s.store.DeleteScope(ctx, scope)
+}
+
+// RevokeSessions kicks the user's live sessions WITHOUT touching their
+// password (the admin's "sign out everywhere"). The revocation lever is
+// token_version — the same one logout and password changes use.
+func (s *Service) RevokeSessions(ctx context.Context, username string) (int, error) {
+	tv, err := s.store.BumpTokenVersion(ctx, username)
+	if err != nil {
+		return 0, err
+	}
+	slog.Info("users.revoke_sessions", "user", username)
+	return tv, nil
+}
+
+// ForceChange arms must_change WITHOUT touching the password — the user's
+// NEXT request meets the 428 gate (their live session is the one that
+// completes it, exactly like wizard temps).
+func (s *Service) ForceChange(ctx context.Context, username string) error {
+	found, err := s.store.ArmMustChange(ctx, username)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return store.ErrNoSuchUser
+	}
+	slog.Info("users.force_change", "user", username)
+	return nil
+}
+
+// SetUserDisabled flips the account. Disabling BUMPS token_version — the
+// login door AND the live sessions die together; enabling re-admits a
+// fresh login.
+func (s *Service) SetUserDisabled(ctx context.Context, username string, disabled bool) (int, error) {
+	tv, err := s.store.SetDisabled(ctx, username, disabled)
+	if err != nil {
+		return 0, err
+	}
+	slog.Info("users.disabled", "user", username, "disabled", disabled)
+	return tv, nil
+}
+
+// DeleteUser removes the account — the store carries the TWO guards
+// (self-deletion, the last users:manage holder). The audit line names the
+// ACTOR: an account deletion is the most consequential admin verb.
+func (s *Service) DeleteUser(ctx context.Context, actor, username string) error {
+	if err := s.store.DeleteUser(ctx, actor, username); err != nil {
+		return err
+	}
+	slog.Info("users.delete", "actor", actor, "user", username)
+	return nil
 }

@@ -23,6 +23,11 @@ func (h *Handler) mountUsers(a chi.Router) {
 	a.Post("/users", h.createUser)
 	a.Post("/users/{username}/reset-password", h.resetUserPassword)
 	a.Patch("/users/{username}/scopes", h.updateUserScopes)
+	a.Post("/users/{username}/revoke-sessions", h.revokeSessions)
+	a.Post("/users/{username}/force-change", h.forceChange)
+	a.Post("/users/{username}/disable", h.disableUser)
+	a.Post("/users/{username}/enable", h.enableUser)
+	a.Delete("/users/{username}", h.deleteUser)
 }
 
 // mountScopesCatalog is the PORTAL-MANAGED scope registry (the spine
@@ -111,7 +116,7 @@ func (h *Handler) resetUserPassword(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"tempPassword": temp})
-	case errors.Is(err, store.ErrNoSuchUser):
+	case errors.Is(err, adminsvc.ErrNoSuchUser):
 		httpx.WriteErr(w, http.StatusNotFound, "no such user")
 	default:
 		slog.Error("users.reset.error", "err", err)
@@ -179,7 +184,7 @@ func (h *Handler) updateUserScopes(w http.ResponseWriter, r *http.Request) {
 		})
 	case errors.Is(err, adminsvc.ErrBadScope):
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, store.ErrNoSuchUser):
+	case errors.Is(err, adminsvc.ErrNoSuchUser):
 		httpx.WriteErr(w, http.StatusNotFound, err.Error())
 	default:
 		slog.Error("users.scopes.error", "err", err)
@@ -249,6 +254,96 @@ func (h *Handler) deleteScope(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, http.StatusNotFound, "no such scope")
 	default:
 		slog.Error("scopes.delete.error", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "internal error")
+	}
+}
+
+// The user-LIFECYCLE verbs (the RBAC round's second cut): every one rides
+// the users:manage group, maps its own sentinels, and audits in the
+// service. Disabled-vs-deleted are different answers on purpose: 403 names
+// the undo (re-enable), 404 is terminal.
+func (h *Handler) revokeSessions(w http.ResponseWriter, r *http.Request) {
+	username := chi.URLParam(r, "username")
+	tv, err := h.svc.RevokeSessions(r.Context(), username)
+	switch {
+	case err == nil:
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"username": username, "tokenVersion": tv,
+		})
+	case errors.Is(err, adminsvc.ErrNoSuchUser):
+		httpx.WriteErr(w, http.StatusNotFound, err.Error())
+	default:
+		slog.Error("users.revoke.error", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "internal error")
+	}
+}
+
+func (h *Handler) forceChange(w http.ResponseWriter, r *http.Request) {
+	username := chi.URLParam(r, "username")
+	err := h.svc.ForceChange(r.Context(), username)
+	switch {
+	case err == nil:
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"username": username, "mustChange": true,
+		})
+	case errors.Is(err, adminsvc.ErrNoSuchUser):
+		httpx.WriteErr(w, http.StatusNotFound, err.Error())
+	default:
+		slog.Error("users.force.error", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "internal error")
+	}
+}
+
+func (h *Handler) disableUser(w http.ResponseWriter, r *http.Request) {
+	username := chi.URLParam(r, "username")
+	tv, err := h.svc.SetUserDisabled(r.Context(), username, true)
+	switch {
+	case err == nil:
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"username": username, "disabled": true, "tokenVersion": tv,
+		})
+	case errors.Is(err, adminsvc.ErrNoSuchUser):
+		httpx.WriteErr(w, http.StatusNotFound, err.Error())
+	default:
+		slog.Error("users.disable.error", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "internal error")
+	}
+}
+
+func (h *Handler) enableUser(w http.ResponseWriter, r *http.Request) {
+	username := chi.URLParam(r, "username")
+	tv, err := h.svc.SetUserDisabled(r.Context(), username, false)
+	switch {
+	case err == nil:
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"username": username, "disabled": false, "tokenVersion": tv,
+		})
+	case errors.Is(err, adminsvc.ErrNoSuchUser):
+		httpx.WriteErr(w, http.StatusNotFound, err.Error())
+	default:
+		slog.Error("users.enable.error", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "internal error")
+	}
+}
+
+func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
+	username := chi.URLParam(r, "username")
+	actorName := ""
+	if p, ok := principalFrom(r.Context()); ok {
+		actorName = p.Username
+	}
+	err := h.svc.DeleteUser(r.Context(), actorName, username)
+	switch {
+	case err == nil:
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case errors.Is(err, adminsvc.ErrSelfDelete):
+		httpx.WriteErr(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, adminsvc.ErrLastManager):
+		httpx.WriteErr(w, http.StatusConflict, err.Error())
+	case errors.Is(err, adminsvc.ErrNoSuchUser):
+		httpx.WriteErr(w, http.StatusNotFound, err.Error())
+	default:
+		slog.Error("users.delete.error", "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "internal error")
 	}
 }

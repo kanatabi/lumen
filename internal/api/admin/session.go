@@ -29,13 +29,16 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		// mustChange route the portal: 428-gated users land on /setup.
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"token": token, "expiresIn": expiresIn,
-			"scopes": p.Scopes, "mustChange": p.MustChange,
+			"scopes": p.Scopes, "mustChange": p.MustChange, "disabled": p.Disabled,
 		})
 	case errors.Is(err, adminsvc.ErrEmptyCredentials):
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error())
 	case errors.As(err, &throttled):
 		w.Header().Set("Retry-After", strconv.Itoa(int(throttled.RetryAfter.Seconds())+1))
 		httpx.WriteErr(w, http.StatusTooManyRequests, "too many attempts")
+	case errors.Is(err, adminsvc.ErrDisabled):
+		slog.Info("session.deny.disabled", "user", in.Username, "ip", clientIP(r))
+		httpx.WriteErr(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, adminsvc.ErrInvalidCredentials):
 		slog.Info("session.deny", "user", in.Username, "ip", clientIP(r))
 		httpx.WriteErr(w, http.StatusUnauthorized, "invalid credentials")

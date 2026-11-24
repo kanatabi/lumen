@@ -26,6 +26,20 @@ var ErrNoSuchUser = errors.New("no such user")
 // vocabulary, and the FK is the validator.
 var ErrUnknownScope = errors.New("unknown scope")
 
+// ErrDisabled backs 403 mapping at login: the account is disabled (0011) —
+// distinct from invalid credentials (the admin can re-enable; "wrong
+// password" would hide that).
+var ErrDisabled = errors.New("account disabled")
+
+// ErrSelfDelete is the delete guard: an admin deleting their OWN account
+// would strand the session they are using (the 403 copy says so).
+var ErrSelfDelete = errors.New("you cannot delete your own account")
+
+// ErrLastManager is the lockout guard: the delete/demote would leave ZERO
+// users holding users:manage — `lumen user` recovery exists, but it must
+// never be the plan (409, counts ride the copy).
+var ErrLastManager = errors.New("the last users:manage holder cannot be removed")
+
 // Auth is everything the request path needs to know about an account: the
 // revocation handle plus the RBAC facts (0010). Scopes and must_change are
 // read per request — NEVER stamped into JWTs beyond the mint — so a
@@ -38,6 +52,7 @@ type Auth struct {
 	TokenVersion int
 	Scopes       []string
 	MustChange   bool
+	Disabled     bool // 0011: denies login; disable BUMPS token_version (live sessions die)
 }
 
 // Authenticate verifies the argon2id passhash and returns the CURRENT auth
@@ -47,18 +62,21 @@ func (g *PG) Authenticate(ctx context.Context, username, password string) (Auth,
 	var a Auth
 	var hash string
 	err := g.pool.QueryRow(ctx,
-		`SELECT u.id, u.passhash, u.token_version, u.must_change,
+		`SELECT u.id, u.passhash, u.token_version, u.must_change, u.disabled,
 		        COALESCE(array_agg(us.scope ORDER BY us.scope) FILTER (WHERE us.scope IS NOT NULL), '{}')
 		   FROM users u
 		   LEFT JOIN user_scopes us ON us.user_id = u.id
 		  WHERE u.username = $1
-		  GROUP BY u.id, u.passhash, u.token_version, u.must_change`, username).
-		Scan(&a.ID, &hash, &a.TokenVersion, &a.MustChange, &a.Scopes)
+		  GROUP BY u.id, u.passhash, u.token_version, u.must_change, u.disabled`, username).
+		Scan(&a.ID, &hash, &a.TokenVersion, &a.MustChange, &a.Disabled, &a.Scopes)
 	if err == pgx.ErrNoRows {
 		return Auth{}, ErrWrongPassword // same error: existence is not a signal
 	}
 	if err != nil {
 		return Auth{}, err
+	}
+	if a.Disabled {
+		return Auth{}, ErrDisabled // re-enable is the admin's undo, not a retype
 	}
 	if !session.VerifyPassword(hash, password) {
 		return Auth{}, ErrWrongPassword
@@ -70,13 +88,13 @@ func (g *PG) Authenticate(ctx context.Context, username, password string) (Auth,
 func (g *PG) AuthFor(ctx context.Context, username string) (Auth, bool, error) {
 	var a Auth
 	err := g.pool.QueryRow(ctx,
-		`SELECT u.id, u.token_version, u.must_change,
+		`SELECT u.id, u.token_version, u.must_change, u.disabled,
 		        COALESCE(array_agg(us.scope ORDER BY us.scope) FILTER (WHERE us.scope IS NOT NULL), '{}')
 		   FROM users u
 		   LEFT JOIN user_scopes us ON us.user_id = u.id
 		  WHERE u.username = $1
-		  GROUP BY u.id, u.token_version, u.must_change`, username).
-		Scan(&a.ID, &a.TokenVersion, &a.MustChange, &a.Scopes)
+		  GROUP BY u.id, u.token_version, u.must_change, u.disabled`, username).
+		Scan(&a.ID, &a.TokenVersion, &a.MustChange, &a.Disabled, &a.Scopes)
 	if err == pgx.ErrNoRows {
 		return Auth{}, false, nil
 	}
@@ -211,17 +229,18 @@ type UserRow struct {
 	Username   string   `json:"username"`
 	Scopes     []string `json:"scopes"`
 	MustChange bool     `json:"mustChange"`
+	Disabled   bool     `json:"disabled"`
 	CreatedAt  string   `json:"createdAt"`
 }
 
 func (g *PG) ListUsers(ctx context.Context) ([]UserRow, error) {
 	rows, err := g.pool.Query(ctx,
-		`SELECT u.id, u.username, u.must_change,
+		`SELECT u.id, u.username, u.must_change, u.disabled,
 		        to_char(u.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'),
 		        COALESCE(array_agg(us.scope ORDER BY us.scope) FILTER (WHERE us.scope IS NOT NULL), '{}')
 		   FROM users u
 		   LEFT JOIN user_scopes us ON us.user_id = u.id
-		  GROUP BY u.id, u.username, u.must_change, u.created_at
+		  GROUP BY u.id, u.username, u.must_change, u.disabled, u.created_at
 		  ORDER BY u.created_at, u.username`)
 	if err != nil {
 		return nil, err
@@ -230,7 +249,7 @@ func (g *PG) ListUsers(ctx context.Context) ([]UserRow, error) {
 	out := []UserRow{}
 	for rows.Next() {
 		var u UserRow
-		if err := rows.Scan(&u.ID, &u.Username, &u.MustChange, &u.CreatedAt, &u.Scopes); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.MustChange, &u.Disabled, &u.CreatedAt, &u.Scopes); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -277,6 +296,83 @@ func (g *PG) SetScopes(ctx context.Context, username string, scopes []string) (i
 			userID).Scan(&tv)
 	})
 	return tv, err
+}
+
+// ArmMustChange FORCES a password change on next login WITHOUT touching
+// the password — the admin's "be suspicious of this account" verb. No
+// token_version bump: the live session is exactly what should meet the
+// 428 gate (that is how wizard temps already behave). Returns whether the
+// user existed.
+func (g *PG) ArmMustChange(ctx context.Context, username string) (bool, error) {
+	tag, err := g.pool.Exec(ctx,
+		`UPDATE users SET must_change = true WHERE username = $1`, username)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SetDisabled flips the account's flag. DISABLING also BUMPS
+// token_version — the user's live sessions die with the login door
+// (enable re-admits a fresh login; the old token stays dead). Returns the
+// (possibly new) token_version, or ErrNoSuchUser.
+func (g *PG) SetDisabled(ctx context.Context, username string, disabled bool) (int, error) {
+	var tv int
+	err := g.pool.QueryRow(ctx,
+		`UPDATE users
+		    SET disabled = $2,
+		        token_version = CASE WHEN $2 THEN token_version + 1 ELSE token_version END
+		  WHERE username = $1
+		  RETURNING token_version`, username, disabled).Scan(&tv)
+	if err == pgx.ErrNoRows {
+		return 0, ErrNoSuchUser
+	}
+	return tv, err
+}
+
+// DeleteUser removes the account (user_scopes cascade). TWO GUARDS,
+// evaluated in ONE transaction: no self-deletion (the acting admin would
+// strand the session in their own hand), and no removal that leaves ZERO
+// users:manage holders (lumen user recovery exists, but must never be the
+// plan). Content is estate-owned — no author FKs — so the delete is just
+// the row.
+func (g *PG) DeleteUser(ctx context.Context, actor, username string) error {
+	return pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
+		if actor == username {
+			return ErrSelfDelete
+		}
+		var targetID string
+		err := tx.QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, username).Scan(&targetID)
+		if err == pgx.ErrNoRows {
+			return ErrNoSuchUser
+		}
+		if err != nil {
+			return err
+		}
+		// the lockout guard: if the TARGET holds users:manage, someone
+		// ELSE must hold it too — count holders EXCLUDING the target
+		var managers int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM user_scopes us
+			   JOIN users u ON u.id = us.user_id
+			  WHERE us.scope = $2 AND u.username <> $1`, username, "users:manage").Scan(&managers); err != nil {
+			return err
+		}
+		var targetManages bool
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) > 0 FROM user_scopes us
+			   JOIN users u ON u.id = us.user_id
+			  WHERE us.scope = $2 AND u.username = $1`, username, "users:manage").Scan(&targetManages); err != nil {
+			return err
+		}
+		if targetManages && managers == 0 {
+			return ErrLastManager
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM users WHERE id = $1`, targetID); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // CatalogEntry is one line of the portal-managed scope catalog.

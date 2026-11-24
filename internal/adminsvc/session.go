@@ -21,6 +21,7 @@ type Principal struct {
 	ID         string
 	Scopes     []string
 	MustChange bool
+	Disabled   bool
 }
 
 // Login is the credential decision: throttle keys (per-IP AND per-account,
@@ -55,7 +56,7 @@ func (s *Service) Login(ctx context.Context, username, password, ip string) (str
 	}
 	s.limiter.Success(ipKey)
 	s.limiter.Success(accountKey)
-	return token, expiresIn, Principal{Username: username, ID: auth.ID, Scopes: auth.Scopes, MustChange: auth.MustChange}, nil
+	return token, expiresIn, Principal{Username: username, ID: auth.ID, Scopes: auth.Scopes, MustChange: auth.MustChange, Disabled: auth.Disabled}, nil
 }
 
 // VerifyBearer is the two-half check: signature (pinned HS256 — session.Parse)
@@ -82,7 +83,7 @@ func (s *Service) VerifyBearer(ctx context.Context, bearer string) (Principal, e
 			"row_tv", map[bool]any{true: nil, false: auth.TokenVersion}[!exists])
 		return Principal{}, ErrInvalidCredentials
 	}
-	return Principal{Username: claims.Subject, ID: auth.ID, Scopes: auth.Scopes, MustChange: auth.MustChange}, nil
+	return Principal{Username: claims.Subject, ID: auth.ID, Scopes: auth.Scopes, MustChange: auth.MustChange, Disabled: auth.Disabled}, nil
 }
 
 // Verify is the introspection verdict the admin plane owes the other
