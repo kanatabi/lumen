@@ -488,16 +488,22 @@ when it arrives it follows the same doctrine: lumen holds the token, writes go t
 the cluster keeps taking orders only from Git.
 
 > **Multi-user + setup wizard (2026-11-11, migration 0007).** users gains
-> role (admin|editor), must_change, created_at. The estate bootstraps itself:
+> must_change, created_at — and the RBAC spine (2026-11-24, migration 0010)
+> REPLACED the user roles with explicit SCOPES: users gains a surrogate
+> UUID id (the relational key; username stays the unique login handle),
+> the PORTAL-MANAGED scope catalog, and user_scopes. The estate bootstraps itself:
 > while users is EMPTY, `GET /admin/setup` says unclaimed and
 > `POST /admin/setup/register` TOFU-claims it (advisory-lock atomic insert,
 > exactly one winner, 410 Gone forever after; the winner gets a session).
 > Admins `POST /admin/users` with SERVER-GENERATED syllable temps (~50 bits,
-> revealed once, argon2id-stored, never logged); `must_change` users get 428
+> revealed once, argon2id-stored, never logged) granting EXACT scopes —
+> the picker IS the grant; the scope CATALOG is portal-managed (users:manage
+> add/list/delete, delete refusing while held). `must_change` users get 428
 > Precondition Required on everything but whoami/change-password/logout —
-> the lock is transport-level, not UI courtesy. Role/flag are read from the
-> row per request (never JWT claims): resets and demotions bite immediately.
-> `lumen user` CLI stays as headless recovery (bootstrap = admin).
+> the lock is transport-level, not UI courtesy. Scopes/flag are read from
+> the row per request; the MINT stamps the grant set (the spine ruling) and
+> every scope mutation bumps token_version, so a demotion is immediate.
+> `lumen user` CLI stays as headless recovery (bootstrap = full catalog).
 
 ## 8b. Process roles — the split (owner ruling 2026-11-13)
 
@@ -530,7 +536,7 @@ bind `LUMEN_SESSION_JWT_SECRET` at all (config layer, tested).
 ```
 POST {admin}/admin/session/verify
 Authorization: Bearer <token>            (forwarded as-is; empty body)
-200 {"username": string, "role": "admin"|"editor", "mustChange": bool}
+200 {"username": string, "id": string, "scopes": string[], "mustChange": bool}
 401 {"error": "invalid token"}           (bad signature/expiry/tv — revoked)
 trust: ClusterIP-only path (lumen has no public ingress, INFRA §2); no
 extra shared secret — the admin plane IS the auth authority.
