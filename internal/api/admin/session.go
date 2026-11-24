@@ -29,7 +29,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		// mustChange route the portal: 428-gated users land on /setup.
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"token": token, "expiresIn": expiresIn,
-			"role": p.Role, "mustChange": p.MustChange,
+			"scopes": p.Scopes, "mustChange": p.MustChange,
 		})
 	case errors.Is(err, adminsvc.ErrEmptyCredentials):
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error())
@@ -75,7 +75,7 @@ func (h *Handler) verifySession(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 		slog.Info("session.verify", "user", p.Username)
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"username": p.Username, "role": p.Role, "mustChange": p.MustChange,
+			"username": p.Username, "id": p.ID, "scopes": p.Scopes, "mustChange": p.MustChange,
 		})
 	case errors.Is(err, adminsvc.ErrInvalidCredentials):
 		httpx.WriteErr(w, http.StatusUnauthorized, "invalid token")

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/kanatabi/lumen/internal/authz"
 	"github.com/kanatabi/lumen/internal/httpx"
 	"github.com/kanatabi/lumen/internal/role"
+	"github.com/kanatabi/lumen/internal/scopes"
 )
 
 type Handler struct {
@@ -113,8 +115,11 @@ func (h *Handler) localAuthenticator(next http.Handler) http.Handler {
 			httpx.WriteErr(w, http.StatusPreconditionRequired, "password change required")
 			return
 		}
-		if p.Role != "admin" && strings.HasPrefix(r.URL.Path, "/admin/users") {
-			httpx.WriteErr(w, http.StatusForbidden, "admin required")
+		// users:manage gates the user administration surface (the RBAC
+		// spine): the local plane's own scope check, one gate before the
+		// handler table
+		if !slices.Contains(p.Scopes, scopes.UsersManage) && strings.HasPrefix(r.URL.Path, "/admin/users") {
+			httpx.WriteErr(w, http.StatusForbidden, "users:manage required")
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, p)))
@@ -143,7 +148,7 @@ func (h *Handler) deskAuthenticator(next http.Handler) http.Handler {
 				httpx.WriteErr(w, http.StatusPreconditionRequired, "password change required")
 				return
 			}
-			p := adminsvc.Principal{Username: id.Username, Role: id.Role, MustChange: id.MustChange}
+			p := adminsvc.Principal{Username: id.Username, ID: id.ID, Scopes: id.Scopes, MustChange: id.MustChange}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, p)))
 		case errors.Is(err, authz.ErrInvalid):
 			httpx.WriteErr(w, http.StatusUnauthorized, "unauthorized")

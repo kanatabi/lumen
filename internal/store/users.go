@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -20,25 +21,39 @@ var ErrUsersExist = errors.New("users already exist")
 // ErrNoSuchUser backs 404 mapping for user administration verbs.
 var ErrNoSuchUser = errors.New("no such user")
 
+// ErrUnknownScope backs 400 mapping for scope assignment: the scope failed
+// the catalog join (RBAC spine, 0010) — the CATALOG is the assignable
+// vocabulary, and the FK is the validator.
+var ErrUnknownScope = errors.New("unknown scope")
+
 // Auth is everything the request path needs to know about an account: the
-// revocation handle plus the multi-user facts (0007). Roles and must_change
-// are read per request — NEVER stamped into JWTs — so a demotion, a forced
-// reset or a completed password change takes effect on the NEXT call, not on
-// the next login.
+// revocation handle plus the RBAC facts (0010). Scopes and must_change are
+// read per request — NEVER stamped into JWTs beyond the mint — so a
+// demotion, a forced reset or a completed password change takes effect on
+// the NEXT call, not on the next login. (The MINT stamps scopes per the
+// spine ruling: token claims assert facts as of mint, and every scope
+// mutation bumps token_version, so a claim can never outlive its truth.)
 type Auth struct {
+	ID           string // the surrogate UUID — every relational reference keys on it
 	TokenVersion int
-	Role         string // admin | editor
+	Scopes       []string
 	MustChange   bool
 }
 
 // Authenticate verifies the argon2id passhash and returns the CURRENT auth
-// facts — the mint stamps token_version, so tokens assert facts, not hopes.
+// facts — the mint stamps token_version + scopes, so tokens assert facts,
+// not hopes.
 func (g *PG) Authenticate(ctx context.Context, username, password string) (Auth, error) {
 	var a Auth
 	var hash string
 	err := g.pool.QueryRow(ctx,
-		`SELECT passhash, token_version, role, must_change FROM users WHERE username = $1`, username).
-		Scan(&hash, &a.TokenVersion, &a.Role, &a.MustChange)
+		`SELECT u.id, u.passhash, u.token_version, u.must_change,
+		        COALESCE(array_agg(us.scope ORDER BY us.scope) FILTER (WHERE us.scope IS NOT NULL), '{}')
+		   FROM users u
+		   LEFT JOIN user_scopes us ON us.user_id = u.id
+		  WHERE u.username = $1
+		  GROUP BY u.id, u.passhash, u.token_version, u.must_change`, username).
+		Scan(&a.ID, &hash, &a.TokenVersion, &a.MustChange, &a.Scopes)
 	if err == pgx.ErrNoRows {
 		return Auth{}, ErrWrongPassword // same error: existence is not a signal
 	}
@@ -55,8 +70,13 @@ func (g *PG) Authenticate(ctx context.Context, username, password string) (Auth,
 func (g *PG) AuthFor(ctx context.Context, username string) (Auth, bool, error) {
 	var a Auth
 	err := g.pool.QueryRow(ctx,
-		`SELECT token_version, role, must_change FROM users WHERE username = $1`, username).
-		Scan(&a.TokenVersion, &a.Role, &a.MustChange)
+		`SELECT u.id, u.token_version, u.must_change,
+		        COALESCE(array_agg(us.scope ORDER BY us.scope) FILTER (WHERE us.scope IS NOT NULL), '{}')
+		   FROM users u
+		   LEFT JOIN user_scopes us ON us.user_id = u.id
+		  WHERE u.username = $1
+		  GROUP BY u.id, u.token_version, u.must_change`, username).
+		Scan(&a.ID, &a.TokenVersion, &a.MustChange, &a.Scopes)
 	if err == pgx.ErrNoRows {
 		return Auth{}, false, nil
 	}
@@ -73,15 +93,28 @@ func (g *PG) BumpTokenVersion(ctx context.Context, username string) (int, error)
 	return tokenVersion, err
 }
 
-// UpsertUser backs `lumen user` (headless recovery). Bootstrap accounts are
-// admin with must_change=false — the CLI is the owner speaking directly; the
+// UpsertUser backs `lumen user` (headless recovery). Bootstrap accounts
+// hold the FULL catalog — the CLI is the owner speaking directly; the
 // forced-change story belongs to wizard-issued temps, not to them.
 func (g *PG) UpsertUser(ctx context.Context, username, passhash string) error {
-	_, err := g.pool.Exec(ctx,
-		`INSERT INTO users(username, passhash, role) VALUES ($1,$2,'admin')
-		 ON CONFLICT (username) DO UPDATE SET passhash = EXCLUDED.passhash`,
-		username, passhash)
-	return err
+	return pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO users(username, passhash) VALUES ($1,$2)
+			 ON CONFLICT (username) DO UPDATE SET passhash = EXCLUDED.passhash`,
+			username, passhash); err != nil {
+			return err
+		}
+		// the full catalog, whatever it holds TODAY (portal-managed — the
+		// recovery grant is "everything that exists", not a frozen list)
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO user_scopes (user_id, scope)
+			 SELECT u.id, s.scope FROM users u CROSS JOIN scopes s
+			  WHERE u.username = $1
+			  ON CONFLICT (user_id, scope) DO NOTHING`, username); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // CountUsers is the wizard probe: only emptiness is observable.
@@ -94,6 +127,7 @@ func (g *PG) CountUsers(ctx context.Context) (int, error) {
 // InsertFirstAdmin is the TOFU registration made race-proof: an advisory
 // TRANSACTION lock spans count+insert, so exactly one concurrent registration
 // can win an empty table. Returns false (no error) when the estate is claimed.
+// The first admin holds the FULL catalog — the owner IS the authority.
 func (g *PG) InsertFirstAdmin(ctx context.Context, username, passhash string) (bool, error) {
 	tx, err := g.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -112,37 +146,83 @@ func (g *PG) InsertFirstAdmin(ctx context.Context, username, passhash string) (b
 		return false, nil // claimed: the wizard is gone forever, not "try later"
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO users(username, passhash, role, must_change) VALUES ($1,$2,'admin',false)`,
+		`INSERT INTO users(username, passhash, must_change) VALUES ($1,$2,false)`,
 		username, passhash); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO user_scopes (user_id, scope)
+		 SELECT u.id, s.scope FROM users u CROSS JOIN scopes s
+		  WHERE u.username = $1
+		  ON CONFLICT (user_id, scope) DO NOTHING`, username); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
 }
 
 // InsertUser backs admin-created accounts (temp password, must_change armed).
-func (g *PG) InsertUser(ctx context.Context, username, passhash, role string) error {
-	_, err := g.pool.Exec(ctx,
-		`INSERT INTO users(username, passhash, role, must_change) VALUES ($1,$2,$3,true)`,
-		username, passhash, role)
+// The caller grants EXACT scopes (roles are gone); each scope must exist in
+// the catalog — the FK is the validator, mapped to ErrUnknownScope.
+func (g *PG) InsertUser(ctx context.Context, username, passhash string, scopes []string) error {
+	err := pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO users(username, passhash, must_change) VALUES ($1,$2,true)`,
+			username, passhash); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO user_scopes (user_id, scope)
+			 SELECT u.id, s.scope FROM users u JOIN scopes s ON s.scope = ANY($2)
+			  WHERE u.username = $1
+			  ON CONFLICT (user_id, scope) DO NOTHING`, username, scopes); err != nil {
+			return err
+		}
+		// completeness: every requested scope must have landed (a scope
+		// missing from the catalog would silently grant fewer)
+		var granted, want int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM user_scopes us JOIN users u ON u.id = us.user_id
+			  WHERE u.username = $1`, username).Scan(&granted); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM unnest($2::text[])`, scopes).Scan(&want); err != nil {
+			return err
+		}
+		if granted != want {
+			return ErrUnknownScope
+		}
+		return nil
+	})
 	var pgErr interface{ SQLState() string }
-	if errors.As(err, &pgErr) && pgErr.SQLState() == "23505" {
-		return errors.New("username taken")
+	if err != nil && errors.As(err, &pgErr) {
+		switch pgErr.SQLState() {
+		case "23505":
+			return errors.New("username taken")
+		case "23503":
+			return ErrUnknownScope
+		}
 	}
 	return err
 }
 
 // UserRow is one line of the admin user list.
 type UserRow struct {
-	Username   string `json:"username"`
-	Role       string `json:"role"`
-	MustChange bool   `json:"mustChange"`
-	CreatedAt  string `json:"createdAt"`
+	ID         string   `json:"id"`
+	Username   string   `json:"username"`
+	Scopes     []string `json:"scopes"`
+	MustChange bool     `json:"mustChange"`
+	CreatedAt  string   `json:"createdAt"`
 }
 
 func (g *PG) ListUsers(ctx context.Context) ([]UserRow, error) {
 	rows, err := g.pool.Query(ctx,
-		`SELECT username, role, must_change, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')
-		   FROM users ORDER BY created_at, username`)
+		`SELECT u.id, u.username, u.must_change,
+		        to_char(u.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'),
+		        COALESCE(array_agg(us.scope ORDER BY us.scope) FILTER (WHERE us.scope IS NOT NULL), '{}')
+		   FROM users u
+		   LEFT JOIN user_scopes us ON us.user_id = u.id
+		  GROUP BY u.id, u.username, u.must_change, u.created_at
+		  ORDER BY u.created_at, u.username`)
 	if err != nil {
 		return nil, err
 	}
@@ -150,12 +230,113 @@ func (g *PG) ListUsers(ctx context.Context) ([]UserRow, error) {
 	out := []UserRow{}
 	for rows.Next() {
 		var u UserRow
-		if err := rows.Scan(&u.Username, &u.Role, &u.MustChange, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.MustChange, &u.CreatedAt, &u.Scopes); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+// SetScopes REPLACES a user's scope set (the admin's assignment is the
+// whole truth, not a diff) and BUMPS token_version — the spine ruling: a
+// demotion is immediate, outstanding tokens die on the spot. Returns the
+// new version. Every requested scope must exist in the catalog.
+func (g *PG) SetScopes(ctx context.Context, username string, scopes []string) (int, error) {
+	slices.Sort(scopes)
+	scopes = slices.Compact(scopes)
+	var tv int
+	err := pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
+		var userID string
+		err := tx.QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, username).Scan(&userID)
+		if err == pgx.ErrNoRows {
+			return ErrNoSuchUser
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM user_scopes WHERE user_id = $1`, userID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO user_scopes (user_id, scope)
+			 SELECT $1, s.scope FROM scopes s WHERE s.scope = ANY($2)
+			  ON CONFLICT (user_id, scope) DO NOTHING`, userID, scopes); err != nil {
+			return err
+		}
+		var held int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM user_scopes WHERE user_id = $1`, userID).Scan(&held); err != nil {
+			return err
+		}
+		if held != len(scopes) {
+			return ErrUnknownScope
+		}
+		return tx.QueryRow(ctx,
+			`UPDATE users SET token_version = token_version + 1 WHERE id = $1 RETURNING token_version`,
+			userID).Scan(&tv)
+	})
+	return tv, err
+}
+
+// CatalogEntry is one line of the portal-managed scope catalog.
+type CatalogEntry struct {
+	Scope       string `json:"scope"`
+	Description string `json:"description"`
+}
+
+// ListCatalog reads the ASSIGNABLE vocabulary (the scopes table) — the
+// users page's picker and the catalog surface both read this.
+func (g *PG) ListCatalog(ctx context.Context) ([]CatalogEntry, error) {
+	rows, err := g.pool.Query(ctx,
+		`SELECT scope, description FROM scopes ORDER BY scope`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CatalogEntry{}
+	for rows.Next() {
+		var c CatalogEntry
+		if err := rows.Scan(&c.Scope, &c.Description); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// AddScope onboards a scope into the catalog (portal-managed per the spine
+// ruling — never manual SQL). Re-adding an existing scope is a no-op that
+// reports false.
+func (g *PG) AddScope(ctx context.Context, scope, description string) (bool, error) {
+	tag, err := g.pool.Exec(ctx,
+		`INSERT INTO scopes (scope, description) VALUES ($1, $2)
+		 ON CONFLICT (scope) DO NOTHING`,
+		scope, description)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// DeleteScope removes a scope from the catalog. It REFUSES while any user
+// holds the scope (the FK is RESTRICT-shaped by the explicit check — the
+// admin gets the counts, never a silent cascade) and returns whether it
+// deleted. Deleting a nonexistent scope is not an error (idempotent).
+func (g *PG) DeleteScope(ctx context.Context, scope string) (bool, int, error) {
+	var holders int
+	if err := g.pool.QueryRow(ctx,
+		`SELECT count(*) FROM user_scopes WHERE scope = $1`, scope).Scan(&holders); err != nil {
+		return false, holders, err
+	}
+	if holders > 0 {
+		return false, holders, nil
+	}
+	tag, err := g.pool.Exec(ctx, `DELETE FROM scopes WHERE scope = $1`, scope)
+	if err != nil {
+		return false, holders, err
+	}
+	return tag.RowsAffected() > 0, holders, nil
 }
 
 // SetPassword writes a new hash. mustChange arms (temp issued) or clears
@@ -182,3 +363,6 @@ func (g *PG) SetPassword(ctx context.Context, username, passhash string, mustCha
 	}
 	return nil
 }
+
+// jwt removed: the store only READS what the sessions package wrote — the
+// claims work belongs to internal/session (L4).

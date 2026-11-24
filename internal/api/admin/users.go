@@ -47,7 +47,7 @@ func (h *Handler) setupRegister(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 		httpx.WriteJSON(w, http.StatusCreated, map[string]any{
 			"token": token, "expiresIn": expiresIn,
-			"role": p.Role, "mustChange": p.MustChange,
+			"scopes": p.Scopes, "mustChange": p.MustChange,
 		})
 	case errors.Is(err, adminsvc.ErrBadUsername), errors.Is(err, adminsvc.ErrShortPass):
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error())
@@ -72,20 +72,20 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Username string `json:"username"`
-		Role     string `json:"role"`
+		Username string   `json:"username"`
+		Scopes   []string `json:"scopes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		httpx.WriteErr(w, http.StatusBadRequest, "json body required")
 		return
 	}
-	temp, err := h.svc.CreateUserWithTemp(r.Context(), in.Username, in.Role)
+	temp, err := h.svc.CreateUserWithTemp(r.Context(), in.Username, in.Scopes)
 	switch {
 	case err == nil:
 		// the temp appears in THIS response and nowhere else — not logs,
 		// not the DB (argon2id hash only)
-		httpx.WriteJSON(w, http.StatusCreated, map[string]string{
-			"username": in.Username, "role": in.Role, "tempPassword": temp,
+		httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+			"username": in.Username, "scopes": in.Scopes, "tempPassword": temp,
 		})
 	case errors.Is(err, adminsvc.ErrBadUsername):
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error())
@@ -143,6 +143,6 @@ func (h *Handler) whoami(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"username": p.Username, "role": p.Role, "mustChange": p.MustChange,
+		"username": p.Username, "id": p.ID, "scopes": p.Scopes, "mustChange": p.MustChange,
 	})
 }

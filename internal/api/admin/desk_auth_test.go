@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -18,6 +19,7 @@ import (
 
 	"github.com/kanatabi/lumen/internal/adminsvc"
 	"github.com/kanatabi/lumen/internal/authz"
+	"github.com/kanatabi/lumen/internal/scopes"
 )
 
 type fakeIntro struct {
@@ -65,9 +67,9 @@ func TestDeskAuthenticatorTable(t *testing.T) {
 	}{
 		{
 			name:   "valid → claims travel to the desk",
-			intro:  &fakeIntro{id: authz.Identity{Username: "ed", Role: "editor"}},
+			intro:  &fakeIntro{id: authz.Identity{Username: "ed", Scopes: []string{scopes.ContentManage}}},
 			wantSt: http.StatusTeapot,
-			wantP:  adminsvc.Principal{Username: "ed", Role: "editor"},
+			wantP:  adminsvc.Principal{Username: "ed", Scopes: []string{scopes.ContentManage}},
 		},
 		{
 			name:   "revoked → 401, desk never sees the request",
@@ -86,7 +88,7 @@ func TestDeskAuthenticatorTable(t *testing.T) {
 		},
 		{
 			name:   "mustChange → 428 (the lock lives at the mint, not here)",
-			intro:  &fakeIntro{id: authz.Identity{Username: "ed", Role: "editor", MustChange: true}},
+			intro:  &fakeIntro{id: authz.Identity{Username: "ed", Scopes: []string{scopes.ContentManage}, MustChange: true}},
 			wantSt: http.StatusPreconditionRequired,
 		},
 	} {
@@ -103,7 +105,7 @@ func TestDeskAuthenticatorTable(t *testing.T) {
 					t.Fatalf("closed response must name the cause: %q", body)
 				}
 			}
-			if tc.wantP != (adminsvc.Principal{}) && got != tc.wantP {
+			if !reflect.DeepEqual(got, tc.wantP) {
 				t.Fatalf("principal %+v want %+v", got, tc.wantP)
 			}
 		})
@@ -112,7 +114,7 @@ func TestDeskAuthenticatorTable(t *testing.T) {
 
 func TestDeskForwardsBearerAsIs(t *testing.T) {
 	var got adminsvc.Principal
-	intro := &fakeIntro{id: authz.Identity{Username: "u", Role: "admin"}}
+	intro := &fakeIntro{id: authz.Identity{Username: "u", Scopes: []string{scopes.UsersManage}}}
 	h := deskRouter(t, intro, &got)
 	req := httptest.NewRequest(http.MethodGet, "/admin/posts", nil)
 	req.Header.Set("Authorization", "Bearer forward-me-verbatim")

@@ -10,10 +10,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/kanatabi/lumen/internal/scopes"
 )
 
 // fakeAdmin is the admin plane as the client sees it: a canned verdict
@@ -60,7 +63,7 @@ func newClock() (*Remote, *time.Time) {
 }
 
 func TestVerifyTable(t *testing.T) {
-	who := Identity{Username: "fzr", Role: "admin", MustChange: false}
+	who := Identity{Username: "fzr", ID: "u1", Scopes: []string{scopes.ContentManage, scopes.UsersManage}, MustChange: false}
 
 	cases := []struct {
 		name    string
@@ -71,7 +74,7 @@ func TestVerifyTable(t *testing.T) {
 	}{
 		{"valid token → identity claims", http.StatusOK, "Bearer alive-token", nil, who},
 		{"revoked/expired token → ErrInvalid", http.StatusUnauthorized, "Bearer dead-token", ErrInvalid, Identity{}},
-		{"editor keeps its role verbatim", http.StatusOK, "Bearer ed", nil, Identity{Username: "ed", Role: "editor", MustChange: true}},
+		{"the editor identity passes verbatim", http.StatusOK, "Bearer ed", nil, Identity{Username: "ed", ID: "u2", Scopes: []string{scopes.ContentManage}, MustChange: true}},
 		{"no bearer prefix → ErrInvalid (cheap local reject)", http.StatusOK, "", ErrInvalid, Identity{}},
 		{"empty bearer → ErrInvalid", http.StatusOK, "Bearer ", ErrInvalid, Identity{}},
 		{"500 from admin → fail CLOSED as unreachable", http.StatusInternalServerError, "Bearer x", ErrAdminUnreachable, Identity{}},
@@ -98,7 +101,7 @@ func TestVerifyTable(t *testing.T) {
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("err=%v want %v", err, tc.wantErr)
 			}
-			if got != tc.want {
+			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("identity=%+v want %+v", got, tc.want)
 			}
 			if f.hits.Load() > 0 && f.lastAuth.Load().(string) != tc.authz {
@@ -109,7 +112,7 @@ func TestVerifyTable(t *testing.T) {
 }
 
 func TestAdminDownFailsClosed(t *testing.T) {
-	f := newFakeAdmin(t, Identity{Username: "x", Role: "admin"})
+	f := newFakeAdmin(t, Identity{Username: "x", ID: "u1", Scopes: []string{scopes.ContentManage}})
 	base := f.srv.URL
 	f.srv.Close() // the plane is GONE: transport error, not a verdict
 	r := NewRemote(base)
@@ -120,7 +123,7 @@ func TestAdminDownFailsClosed(t *testing.T) {
 }
 
 func TestTTLCacheFakeClock(t *testing.T) {
-	f := newFakeAdmin(t, Identity{Username: "fzr", Role: "admin"})
+	f := newFakeAdmin(t, Identity{Username: "fzr", ID: "u1", Scopes: []string{scopes.ContentManage}})
 	r, now := newClock()
 	r.endpoint = f.srv.URL + "/admin/session/verify"
 	r.client = f.srv.Client()
@@ -158,7 +161,7 @@ func TestTTLCacheFakeClock(t *testing.T) {
 }
 
 func TestDenialsAreNeverCached(t *testing.T) {
-	f := newFakeAdmin(t, Identity{Username: "fzr", Role: "admin"})
+	f := newFakeAdmin(t, Identity{Username: "fzr", ID: "u1", Scopes: []string{scopes.ContentManage}})
 	f.status.Store(http.StatusUnauthorized)
 	r, _ := newClock()
 	r.endpoint = f.srv.URL + "/admin/session/verify"
@@ -174,7 +177,7 @@ func TestDenialsAreNeverCached(t *testing.T) {
 }
 
 func TestCacheKeyedByTokenHash(t *testing.T) {
-	f := newFakeAdmin(t, Identity{Username: "fzr", Role: "admin"})
+	f := newFakeAdmin(t, Identity{Username: "fzr", ID: "u1", Scopes: []string{scopes.ContentManage}})
 	r, _ := newClock()
 	r.endpoint = f.srv.URL + "/admin/session/verify"
 	r.client = f.srv.Client()
@@ -211,7 +214,7 @@ func TestNewRemoteEndpointShape(t *testing.T) {
 		buf := make([]byte, 64)
 		n, _ := r.Body.Read(buf)
 		bodySeen = strings.TrimSpace(string(buf[:n]))
-		_ = json.NewEncoder(w).Encode(Identity{Username: "u", Role: "editor"})
+		_ = json.NewEncoder(w).Encode(Identity{Username: "u", ID: "u2", Scopes: []string{scopes.ContentManage}})
 	}))
 	defer srv.Close()
 	r := NewRemote(srv.URL)

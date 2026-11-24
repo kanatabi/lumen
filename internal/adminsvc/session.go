@@ -18,7 +18,8 @@ import (
 // consistent by construction.
 type Principal struct {
 	Username   string
-	Role       string
+	ID         string
+	Scopes     []string
 	MustChange bool
 }
 
@@ -54,7 +55,7 @@ func (s *Service) Login(ctx context.Context, username, password, ip string) (str
 	}
 	s.limiter.Success(ipKey)
 	s.limiter.Success(accountKey)
-	return token, expiresIn, Principal{Username: username, Role: auth.Role, MustChange: auth.MustChange}, nil
+	return token, expiresIn, Principal{Username: username, ID: auth.ID, Scopes: auth.Scopes, MustChange: auth.MustChange}, nil
 }
 
 // VerifyBearer is the two-half check: signature (pinned HS256 — session.Parse)
@@ -81,7 +82,7 @@ func (s *Service) VerifyBearer(ctx context.Context, bearer string) (Principal, e
 			"row_tv", map[bool]any{true: nil, false: auth.TokenVersion}[!exists])
 		return Principal{}, ErrInvalidCredentials
 	}
-	return Principal{Username: claims.Subject, Role: auth.Role, MustChange: auth.MustChange}, nil
+	return Principal{Username: claims.Subject, ID: auth.ID, Scopes: auth.Scopes, MustChange: auth.MustChange}, nil
 }
 
 // Verify is the introspection verdict the admin plane owes the other

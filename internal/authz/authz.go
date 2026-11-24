@@ -50,11 +50,14 @@ const CacheTTL = 30 * time.Second
 const RequestTimeout = 5 * time.Second
 
 // Identity is the verdict the admin plane returns about a bearer — the
-// same facts whoami carries (roles are row facts, never JWT claims).
+// same facts whoami carries (scopes are row facts, stamped at MINT per the
+// spine ruling and re-read per verify; the tv check keeps a claim from
+// outliving its truth).
 type Identity struct {
-	Username   string `json:"username"`
-	Role       string `json:"role"`
-	MustChange bool   `json:"mustChange"`
+	Username   string   `json:"username"`
+	ID         string   `json:"id"`
+	Scopes     []string `json:"scopes"`
+	MustChange bool     `json:"mustChange"`
 }
 
 var (

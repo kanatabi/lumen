@@ -37,6 +37,7 @@ var migrationRoles = map[string]role.Planes{
 	"0007_users_roles.sql":    role.PlaneAdmin, // layers role/must_change onto 0002's table
 	"0008_tag_posts_drop.sql": role.PlaneCMS,   // the counter column dies — counts derive from the search facet (design amendment 2026-11-15)
 	"0009_photo_exif.sql":     role.PlaneCMS,   // the upload-time EXIF capture (jsonb; Round B 2026-11-22)
+	"0010_rbac_scopes.sql":    role.PlaneAdmin, // the RBAC spine: users.id surrogate key, the scope catalog + grants, role column dropped (2026-11-24)
 }
 
 // Migrate applies the FULL schema (both planes) — the legacy "all" path,

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/kanatabi/lumen/internal/scopes"
 	"github.com/kanatabi/lumen/internal/session"
 	"github.com/kanatabi/lumen/internal/store"
 )
@@ -28,7 +29,6 @@ var (
 	ErrSamePassword = errors.New("the new password must differ from the current one")
 	// validUsername is deliberate: no spaces, no lookalike of the throttle keys.
 	validUsername = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{1,31}$`)
-	validRole     = map[string]bool{"admin": true, "editor": true}
 )
 
 // SetupStatus is the wizard probe: one bit of information, nothing enumerable.
@@ -69,7 +69,7 @@ func (s *Service) RegisterFirstAdmin(ctx context.Context, username, password str
 	if err != nil {
 		return "", 0, Principal{}, err
 	}
-	return token, expiresIn, Principal{Username: username, Role: auth.Role, MustChange: auth.MustChange}, nil
+	return token, expiresIn, Principal{Username: username, ID: auth.ID, Scopes: auth.Scopes, MustChange: auth.MustChange}, nil
 }
 
 // ListUsers is admin-eyes-only (the transport enforces the gate; the service
@@ -79,25 +79,29 @@ func (s *Service) ListUsers(ctx context.Context) ([]store.UserRow, error) {
 }
 
 // CreateUserWithTemp provisions an account with a server-generated temp
-// password (must_change armed). The temp is returned EXACTLY ONCE — the
-// caller's response, nothing else; it is not logged and not recoverable.
-func (s *Service) CreateUserWithTemp(ctx context.Context, username, role string) (string, error) {
+// password (must_change armed), granted EXACT scopes — roles are gone
+// (the spine ruling): the admin's picker IS the grant. The temp is
+// returned EXACTLY ONCE — the caller's response, nothing else; it is not
+// logged and not recoverable.
+func (s *Service) CreateUserWithTemp(ctx context.Context, username string, granted []string) (string, error) {
 	username = strings.TrimSpace(username)
 	if !validUsername.MatchString(username) {
 		return "", ErrBadUsername
 	}
-	if !validRole[role] {
-		return "", ErrBadUsername
+	for _, sc := range granted {
+		if !scopes.Valid(sc) {
+			return "", ErrBadUsername
+		}
 	}
 	temp := generateTempPassword()
 	hash, err := session.HashPassword(temp)
 	if err != nil {
 		return "", err
 	}
-	if err := s.store.InsertUser(ctx, username, hash, role); err != nil {
+	if err := s.store.InsertUser(ctx, username, hash, granted); err != nil {
 		return "", err
 	}
-	slog.Info("users.create", "user", username, "role", role)
+	slog.Info("users.create", "user", username, "scopes", granted)
 	return temp, nil
 }
 
