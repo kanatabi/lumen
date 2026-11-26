@@ -34,6 +34,17 @@ var Matrix = []MatrixRow{
 	{"GET", "/admin/session", true, false},           // whoami
 	{"DELETE", "/admin/session", true, false},        // logout = token_version bump
 	{"POST", "/admin/session/password", true, false}, // guided change (428 escape)
+	// the auth-method seam (the passkey round, C1): login begin/finish
+	// are PUBLIC (the mint happens inside finish); the setup surfaces
+	// ride the authed mount (handler.go). The methods endpoint is the
+	// login UI's data source.
+	{"GET", "/admin/session/auth/methods", true, false},
+	{"POST", "/admin/session/webauthn/login/begin", true, false},
+	{"POST", "/admin/session/webauthn/login/finish", true, false},
+	{"GET", "/admin/session/webauthn", true, false},
+	{"POST", "/admin/session/webauthn/register/begin", true, false},
+	{"POST", "/admin/session/webauthn/register/finish", true, false},
+	{"DELETE", "/admin/session/webauthn/{id}", true, false},
 	// users + the scope catalog: the RBAC spine — the mgmt group gates on
 	// the users:manage scope (the local authenticator verifies the bearer)
 	{"GET", "/admin/users", true, false},

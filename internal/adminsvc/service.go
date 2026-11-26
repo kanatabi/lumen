@@ -10,6 +10,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/kanatabi/lumen/internal/bao"
 	"github.com/kanatabi/lumen/internal/media"
 	"github.com/kanatabi/lumen/internal/queue"
@@ -46,6 +47,11 @@ type Service struct {
 	mediaPrefix   string // LUMEN_MEDIA_PREFIX — applied once in UploadPhoto (§5)
 
 	bao baoAPI // concrete: *bao.Client; tests: the fake in secrets_test.go
+
+	// wa is the WebAuthn instance (the passkey method's verifier). NIL =
+	// passkey disabled — the methods endpoint omits it and the routes
+	// answer the honest 503-ish sentinel (EnableWebAuthn wires it).
+	wa *webauthn.WebAuthn
 }
 
 func New(st *store.PG, q *queue.Client, eng *search.Service, jwtSecret string, limiter *throttle.Limiter) *Service {

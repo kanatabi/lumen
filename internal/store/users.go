@@ -49,6 +49,7 @@ var ErrLastManager = errors.New("the last users:manage holder cannot be removed"
 // mutation bumps token_version, so a claim can never outlive its truth.)
 type Auth struct {
 	ID           string // the surrogate UUID — every relational reference keys on it
+	Username     string // the human login handle (the discoverable-login path resolves BY id)
 	TokenVersion int
 	Scopes       []string
 	MustChange   bool
@@ -95,6 +96,24 @@ func (g *PG) AuthFor(ctx context.Context, username string) (Auth, bool, error) {
 		  WHERE u.username = $1
 		  GROUP BY u.id, u.token_version, u.must_change, u.disabled`, username).
 		Scan(&a.ID, &a.TokenVersion, &a.MustChange, &a.Disabled, &a.Scopes)
+	if err == pgx.ErrNoRows {
+		return Auth{}, false, nil
+	}
+	return a, err == nil, err
+}
+
+// AuthForID resolves the auth row by the SURROGATE id (the passkey
+// discoverable-login path: the assertion's userHandle IS users.id).
+func (g *PG) AuthForID(ctx context.Context, id string) (Auth, bool, error) {
+	var a Auth
+	err := g.pool.QueryRow(ctx,
+		`SELECT u.id, u.username, u.token_version, u.must_change, u.disabled,
+		        COALESCE(array_agg(us.scope ORDER BY us.scope) FILTER (WHERE us.scope IS NOT NULL), '{}')
+		   FROM users u
+		   LEFT JOIN user_scopes us ON us.user_id = u.id
+		  WHERE u.id = $1::uuid
+		  GROUP BY u.id, u.username, u.token_version, u.must_change, u.disabled`, id).
+		Scan(&a.ID, &a.Username, &a.TokenVersion, &a.MustChange, &a.Disabled, &a.Scopes)
 	if err == pgx.ErrNoRows {
 		return Auth{}, false, nil
 	}

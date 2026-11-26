@@ -80,6 +80,23 @@ func (h *Handler) Mount(r chi.Router, planes role.Planes) {
 				auth.Delete("/session", h.logout)
 				auth.Post("/session/password", h.changePassword)
 			})
+
+			// the AUTH-METHOD SEAM (the passkey round, C1): login begin/
+			// finish is PUBLIC (the mint happens inside finish — the
+			// second half of the login door); register/list/delete are
+			// the setup surfaces (authenticated). The methods endpoint
+			// is the login UI's data source (a button per enabled
+			// method — oauth joins later without a UI rewrite).
+			a.Get("/session/auth/methods", h.authMethods)
+			a.Post("/session/webauthn/login/begin", h.webauthnLoginBegin)
+			a.Post("/session/webauthn/login/finish", h.webauthnLoginFinish)
+			a.Group(func(wa chi.Router) {
+				wa.Use(h.localAuthenticator)
+				wa.Get("/session/webauthn", h.webauthnList)
+				wa.Post("/session/webauthn/register/begin", h.webauthnRegisterBegin)
+				wa.Post("/session/webauthn/register/finish", h.webauthnRegisterFinish)
+				wa.Delete("/session/webauthn/{id}", h.webauthnDelete)
+			})
 			// the management surfaces are the SPINE's scope gates: each
 			// group declares its requirement in code, middleware checks the
 			// principal's scopes (verified fresh per request)

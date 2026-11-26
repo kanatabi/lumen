@@ -42,6 +42,15 @@ type Config struct {
 	SessionSecret string // HS256 key, 32B, Bao lumen/{env} — ADMIN-PLANE ONLY (§8)
 	AdminURL      string // cms plane: base URL of the admin plane to introspect (§8 verify)
 
+	// WebAuthn (the passkey round, C1): the relying-party identity. BOTH
+	// empty = passkey disabled (the methods endpoint omits it — the
+	// portal's login UI degrades gracefully). RPID is the domain the
+	// credentials bind to (console.gofar.id); ORIGIN is the full scheme+
+	// host the browser asserts (defaults to https:// + RPID). Plain env,
+	// NOT Bao — nothing here is secret.
+	WebAuthnRPID   string
+	WebAuthnOrigin string
+
 	// Meilisearch index uids (role split: planes may live in different
 	// engine deployments; dev defaults keep the loop unchanged).
 	MeiliIndexPosts  string // LUMEN_MEILI_INDEX_POSTS, default "posts"
@@ -117,6 +126,10 @@ var Bindings = []Binding{
 	{Key: "db_url", Envs: []string{"LUMEN_DB_URL"}, Planes: bothPlanes},
 	{Key: "port", Envs: []string{"LUMEN_PORT", "PORT"}, Planes: bothPlanes},
 	{Key: "session_jwt_secret", Envs: []string{"LUMEN_SESSION_JWT_SECRET"}, Planes: role.PlaneAdmin},
+	// the passkey round (C1): the relying-party identity — OPTIONAL, the
+	// feature is off when unset (the methods endpoint answers honestly)
+	{Key: "webauthn_rp_id", Envs: []string{"LUMEN_WEBAUTHN_RP_ID"}, Planes: role.PlaneAdmin},
+	{Key: "webauthn_origin", Envs: []string{"LUMEN_WEBAUTHN_ORIGIN"}, Planes: role.PlaneAdmin},
 	{Key: "admin_url", Envs: []string{"LUMEN_ADMIN_URL"}, Planes: role.PlaneCMS},
 	{Key: "origin", Envs: []string{"LUMEN_ORIGIN"}, Planes: role.PlaneCMS},
 	{Key: "meili_url", Envs: []string{"LUMEN_MEILI_URL"}, Planes: role.PlaneCMS},
@@ -284,6 +297,8 @@ func Load() (Config, error) {
 		MeiliKey:         get("meili_key"),
 		SessionSecret:    get("session_jwt_secret"),
 		AdminURL:         get("admin_url"),
+		WebAuthnRPID:     get("webauthn_rp_id"),
+		WebAuthnOrigin:   get("webauthn_origin"),
 		MeiliIndexPosts:  get("meili_index_posts"),
 		MeiliIndexPhotos: get("meili_index_photos"),
 		Media: Media{

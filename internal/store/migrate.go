@@ -39,6 +39,7 @@ var migrationRoles = map[string]role.Planes{
 	"0009_photo_exif.sql":     role.PlaneCMS,   // the upload-time EXIF capture (jsonb; Round B 2026-11-22)
 	"0010_rbac_scopes.sql":    role.PlaneAdmin, // the RBAC spine: users.id surrogate key, the scope catalog + grants, role column dropped (2026-11-24)
 	"0011_user_lifecycle.sql": role.PlaneAdmin, // the user-lifecycle verbs: the disabled flag (2026-11-24)
+	"0012_webauthn.sql":       role.PlaneAdmin, // the passkey credentials (the auth-method seam, 2026-11-25)
 }
 
 // Migrate applies the FULL schema (both planes) — the legacy "all" path,

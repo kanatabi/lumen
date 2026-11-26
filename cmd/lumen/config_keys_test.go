@@ -30,6 +30,8 @@ func TestConfigKeysGoldenAdmin(t *testing.T) {
 		"LUMEN_TIMEOUT_OPENBAO_LOGIN",
 		"LUMEN_TIMEOUT_OPENBAO_READ",
 		"LUMEN_TIMEOUT_OPENBAO_WRITE",
+		"LUMEN_WEBAUTHN_ORIGIN",
+		"LUMEN_WEBAUTHN_RP_ID",
 	}, "\n") + "\n"
 	if out != want {
 		t.Fatalf("admin keys drifted:\ngot:\n%s\nwant:\n%s", out, want)
