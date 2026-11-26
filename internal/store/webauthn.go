@@ -12,7 +12,13 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// ErrCredentialExists is the duplicate-registration race: the browser's
+// exclude list is a hint, so a second finish for the same authenticator
+// lands here. Handlers answer 409, never 500.
+var ErrCredentialExists = errors.New("credential already registered")
 
 // WebAuthnCredential is one registered authenticator bound to a user.
 type WebAuthnCredential struct {
@@ -36,13 +42,25 @@ func scanWebAuthn(row pgx.Row) (WebAuthnCredential, error) {
 	return c, err
 }
 
-// WebAuthnCreateCredential persists a freshly verified registration.
-func (g *PG) WebAuthnCreateCredential(ctx context.Context, c WebAuthnCredential) error {
-	_, err := g.pool.Exec(ctx,
+// WebAuthnCreateCredential persists a freshly verified registration and
+// answers the row's created_at (the response contract prints it; the
+// roster's format — minutes, no zone — so both surfaces read one way).
+// A duplicate credential id is the ONE race the caller maps to 409.
+func (g *PG) WebAuthnCreateCredential(ctx context.Context, c WebAuthnCredential) (string, error) {
+	var createdAt string
+	err := g.pool.QueryRow(ctx,
 		`INSERT INTO webauthn_credentials (id, user_id, public_key, sign_count, transports, label)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		c.ID, c.UserID, c.PublicKey, c.SignCount, c.Transports, c.Label)
-	return err
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING COALESCE(to_char(created_at, 'YYYY-MM-DD HH24:MI'), '')`,
+		c.ID, c.UserID, c.PublicKey, c.SignCount, c.Transports, c.Label).Scan(&createdAt)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return "", ErrCredentialExists
+		}
+		return "", err
+	}
+	return createdAt, nil
 }
 
 // WebAuthnCredentialsFor lists a user's registered authenticators -

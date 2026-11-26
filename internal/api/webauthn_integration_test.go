@@ -219,8 +219,8 @@ func TestWebAuthnFlow(t *testing.T) {
 		t.Fatalf("login begin: %d %s", code, res)
 	}
 	begin = unwrap(t, res)
-	code, res = h.do("POST", "/admin/session/webauthn/login/finish",
-		`{"state":"`+begin.State+`","response":`+fake.assertion(begin.Options.PublicKey.Challenge)+`}`, "")
+	loginBody := `{"state":"` + begin.State + `","response":` + fake.assertion(begin.Options.PublicKey.Challenge) + `}`
+	code, res = h.do("POST", "/admin/session/webauthn/login/finish", loginBody, "")
 	if code != 200 {
 		t.Fatalf("login finish: %d %s", code, res)
 	}
@@ -233,6 +233,46 @@ func TestWebAuthnFlow(t *testing.T) {
 	// the minted session is REAL: it introspects
 	if code, res = h.do("GET", "/admin/session", "", granted.Token); code != 200 || !bytes.Contains(res, []byte("fzr-test")) {
 		t.Fatalf("whoami with the passkey-minted token: %d %s", code, res)
+	}
+
+	// REPLAY: the SAME assertion again. The library's counter check flags
+	// the clone (0 -> 0 never warns, N -> N does) and the mint is refused —
+	// a stolen assertion is not a second session.
+	code, res = h.do("POST", "/admin/session/webauthn/login/finish", loginBody, "")
+	if code != 401 {
+		t.Fatalf("replayed assertion: %d %s", code, res)
+	}
+
+	// LABEL: user copy is capped (64 runes) before the row is written
+	code, res = h.admin("POST", "/admin/session/webauthn/register/begin", "")
+	if code != 200 {
+		t.Fatalf("label begin: %d %s", code, res)
+	}
+	begin = unwrap(t, res)
+	backup := newFakeAuth(t, rpID, origin, uidBytes)
+	code, res = h.admin("POST", "/admin/session/webauthn/register/finish",
+		`{"label":"`+strings.Repeat("x", 65)+`","state":"`+begin.State+`","response":`+backup.registerResponse(begin.Options.PublicKey.Challenge)+`}`)
+	if code != 400 {
+		t.Fatalf("label cap: %d %s", code, res)
+	}
+
+	// a SECOND authenticator registers cleanly (multiple passkeys per user)
+	code, res = h.admin("POST", "/admin/session/webauthn/register/begin", "")
+	begin = unwrap(t, res)
+	code, res = h.admin("POST", "/admin/session/webauthn/register/finish",
+		`{"label":"Backup key","state":"`+begin.State+`","response":`+backup.registerResponse(begin.Options.PublicKey.Challenge)+`}`)
+	if code != 201 {
+		t.Fatalf("second register: %d %s", code, res)
+	}
+
+	// DUPLICATE: the exclude list is a hint — the INSERT is the guard (409,
+	// never a 500)
+	code, res = h.admin("POST", "/admin/session/webauthn/register/begin", "")
+	begin = unwrap(t, res)
+	code, res = h.admin("POST", "/admin/session/webauthn/register/finish",
+		`{"label":"Backup key","state":"`+begin.State+`","response":`+backup.registerResponse(begin.Options.PublicKey.Challenge)+`}`)
+	if code != 409 {
+		t.Fatalf("duplicate register: %d %s", code, res)
 	}
 
 	// TAMPERED STATE: a flipped token is a 400, never a mint
@@ -261,6 +301,16 @@ func TestWebAuthnFlow(t *testing.T) {
 		t.Fatalf("forged handle: %d %s", code, res)
 	}
 
+	// DELETE is scoped to the caller's own row and the roster reflects it
+	backupID := base64.RawURLEncoding.EncodeToString(backup.credID)
+	if code, res = h.admin("DELETE", "/admin/session/webauthn/"+backupID, ""); code != 204 {
+		t.Fatalf("delete: %d %s", code, res)
+	}
+	if code, res = h.admin("GET", "/admin/session/webauthn", ""); code != 200 ||
+		!bytes.Contains(res, []byte("Bitwarden")) || bytes.Contains(res, []byte("Backup key")) {
+		t.Fatalf("roster after delete: %d %s", code, res)
+	}
+
 	// DISABLED: the passkey door respects the flag (the same distinct 403)
 	if code, _ = h.admin("POST", "/admin/users/fzr-test/disable", ""); code != 200 {
 		t.Fatalf("disable: %d", code)
@@ -276,3 +326,21 @@ func TestWebAuthnFlow(t *testing.T) {
 }
 
 var _ = protocol.AuthenticatorTransport("internal") // the transports ride the roster
+
+// TestWebAuthnDisabled proves the honest-absence shape: an admin plane with
+// no relying-party identity serves NO passkey route (404 "no such method"),
+// and the methods endpoint omits it — the portal's button disappears.
+func TestWebAuthnDisabled(t *testing.T) {
+	h := newAdminHarness(t) // deliberately NOT enabled
+	if code, res := h.do("GET", "/admin/session/auth/methods", "", ""); code != 200 ||
+		bytes.Contains(res, []byte("passkey")) {
+		t.Fatalf("methods on a disabled plane: %d %s", code, res)
+	}
+	if code, res := h.do("POST", "/admin/session/webauthn/login/begin", "", ""); code != 404 ||
+		!bytes.Contains(res, []byte("no such method")) {
+		t.Fatalf("disabled begin: %d %s", code, res)
+	}
+	if code, res := h.admin("POST", "/admin/session/webauthn/register/begin", ""); code != 404 {
+		t.Fatalf("disabled register begin: %d %s", code, res)
+	}
+}

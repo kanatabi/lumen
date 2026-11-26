@@ -193,6 +193,10 @@ func (h *Handler) webauthnError(w http.ResponseWriter, r *http.Request, err erro
 		httpx.WriteErr(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, adminsvc.ErrPasskeyState):
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, adminsvc.ErrPasskeyExists):
+		httpx.WriteErr(w, http.StatusConflict, err.Error())
+	case errors.Is(err, adminsvc.ErrPasskeyLabel):
+		httpx.WriteErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, adminsvc.ErrPasskeyForbidden):
 		httpx.WriteErr(w, http.StatusNotFound, "no such method") // an unconfigured feature is ABSENT
 	case errors.Is(err, adminsvc.ErrInvalidCredentials):

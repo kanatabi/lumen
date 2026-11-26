@@ -20,7 +20,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -33,7 +35,8 @@ import (
 var (
 	ErrPasskeyState     = errors.New("passkey challenge invalid or expired") // 400: the client restarts the flow
 	ErrPasskeyNotFound  = errors.New("passkey not registered")               // folds into the 401 voice
-	ErrPasskeyNotOwned  = errors.New("passkey belongs to another account")   // never leak whose
+	ErrPasskeyExists    = errors.New("passkey already registered")           // 409: the credential id is unique
+	ErrPasskeyLabel     = errors.New("passkey label too long")               // 400: the label is user copy
 	ErrPasskeyForbidden = errors.New("passkeys not enabled")                 // the feature is off
 )
 
@@ -200,8 +203,17 @@ func (s *Service) PasskeyLoginFinish(ctx context.Context, stateToken string, bod
 	if authRow.Disabled {
 		return "", 0, Principal{}, ErrDisabled // the same distinct 403 as the password door
 	}
-	// the replay tripwire: the counter moved, persist it (a static
-	// counter across assertions = a cloned key)
+	// the CLONE tripwire: the library sets CloneWarning when the assertion's
+	// counter did not advance (0 -> 0 never warns, so counter-less passkeys
+	// are unaffected). A cloned authenticator must not mint — refuse, and
+	// leave the audit line; the stored counter is untouched.
+	if credential.Authenticator.CloneWarning {
+		slog.Warn("session.deny.passkey.clone",
+			"user", authRow.Username, "credential", row.ID, "ip", ip,
+			"stored", row.SignCount, "asserted", credential.Authenticator.SignCount)
+		return "", 0, Principal{}, ErrInvalidCredentials
+	}
+	// the replay tripwire: the counter moved, persist it
 	if err := s.store.WebAuthnTouchSignCount(ctx, row.ID, credential.Authenticator.SignCount); err != nil {
 		return "", 0, Principal{}, err
 	}
@@ -288,6 +300,9 @@ func (s *Service) PasskeyRegisterFinish(ctx context.Context, p Principal, stateT
 	if label == "" {
 		label = "passkey"
 	}
+	if utf8.RuneCountInString(label) > 64 {
+		return store.WebAuthnCredential{}, ErrPasskeyLabel
+	}
 	transport := make([]string, 0, len(credential.Transport))
 	for _, t := range credential.Transport {
 		transport = append(transport, string(t))
@@ -300,9 +315,14 @@ func (s *Service) PasskeyRegisterFinish(ctx context.Context, p Principal, stateT
 		Transports: transport,
 		Label:      label,
 	}
-	if err := s.store.WebAuthnCreateCredential(ctx, row); err != nil {
+	createdAt, err := s.store.WebAuthnCreateCredential(ctx, row)
+	if err != nil {
+		if errors.Is(err, store.ErrCredentialExists) {
+			return store.WebAuthnCredential{}, ErrPasskeyExists
+		}
 		return store.WebAuthnCredential{}, err
 	}
+	row.CreatedAt = createdAt
 	return row, nil
 }
 
@@ -357,9 +377,6 @@ func uuidString(handle []byte) (string, error) {
 // user handle). The adminsvc imports the uuid codec from the store's
 // dependency tree.
 func uuidBytes(id string) ([]byte, error) {
-	if len(id) == 16 {
-		return []byte(id), nil
-	}
 	// base64-free: hex/uuid parse via pgx's codec would import more; the
 	// uuid shape is 36 chars with dashes
 	if len(id) != 36 {

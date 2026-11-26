@@ -3,8 +3,9 @@
 // normalizes to begin -> finish -> the ONE session mint; what varies is
 // how the user proves who they are and what the browser consumes. This
 // package holds the method-agnostic half: the signed begin-state token
-// (stateless challenge carriage — replica-safe, replay-proof) and the
-// method registry shape.
+// (stateless challenge carriage — replica-safe and TAMPER-proof; a replay
+// inside the TTL is the caller's trade-off, bounded by the credential
+// counter and the library's clone warning) and the method registry shape.
 package auth
 
 import (
@@ -25,7 +26,10 @@ var (
 
 // stateTTL bounds a begin->finish round trip: minutes, not sessions. A
 // stale challenge is a dead challenge — the client restarts the flow.
-const stateTTL = 3 * time.Minute
+// MUST be >= the WebAuthn prompt timeout the library advertises to the
+// browser (its default is 5 minutes, webauthn/const.go); a shorter TTL
+// fails a slow ceremony at finish with "challenge invalid or expired".
+const stateTTL = 5 * time.Minute
 
 // statePayload is the HMAC'd body. Purpose isolates the flows (a login
 // state can never finish a link and vice versa); Method names the
