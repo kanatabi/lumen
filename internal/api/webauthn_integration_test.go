@@ -4,7 +4,9 @@ package api_test
 // (the LUMEN_INTEGRATION gate): a FAKE AUTHENTICATOR — pure Go, an ECDSA
 // P-256 key, hand-built authenticator data, CBOR via the library's own
 // encoder — drives register -> login -> MINT end to end, plus the
-// denial shapes (tampered state, forged user handle, disabled user).
+// denials the audit demanded: a replayed assertion (clone tripwire),
+// tampered state, forged handle, disabled user, duplicate registration,
+// the label cap, scoped delete, and the unconfigured plane's 404.
 // The library owns the protocol crypto; this test proves OUR wiring.
 
 import (

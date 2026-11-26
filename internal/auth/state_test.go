@@ -60,7 +60,7 @@ func TestStatePurposeIsolation(t *testing.T) {
 func TestStateExpiry(t *testing.T) {
 	secret := []byte("0123456789abcdef0123456789abcdef")
 	token, _ := SignState(secret, "passkey-login", "passkey", struct{}{})
-	// the TTL is 3m — an expired token is the same verification shape;
+	// the TTL is minutes — an expired token is the same verification shape;
 	// verify via a crafted far-past expiry by direct payload surgery
 	parts := strings.Split(token, ".")
 	payload, _ := base64.RawURLEncoding.DecodeString(parts[0])
