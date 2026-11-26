@@ -44,12 +44,18 @@ type Config struct {
 
 	// WebAuthn (the passkey round, C1): the relying-party identity. BOTH
 	// empty = passkey disabled (the methods endpoint omits it — the
-	// portal's login UI degrades gracefully). RPID is the domain the
-	// credentials bind to (console.gofar.id); ORIGIN is the full scheme+
-	// host the browser asserts (defaults to https:// + RPID). Plain env,
-	// NOT Bao — nothing here is secret.
-	WebAuthnRPID   string
-	WebAuthnOrigin string
+	// portal's login UI degrades gracefully). RPID is the REGISTRABLE
+	// DOMAIN the credentials bind to — gofar.id, NOT the console host:
+	// one shared lumen-admin serves every environment's mellon, and the
+	// registrable-domain rp-id lets console.gofar.id AND
+	// staging-console.gofar.id run the ceremony against the SAME
+	// credentials (identity is shared across envs by the role-split
+	// design; the content is what differs). ORIGINS is the comma-
+	// separated list of full scheme+host origins the browser may assert
+	// (defaults to https:// + RPID). Plain env, NOT Bao — nothing here
+	// is secret.
+	WebAuthnRPID    string
+	WebAuthnOrigins string
 
 	// Meilisearch index uids (role split: planes may live in different
 	// engine deployments; dev defaults keep the loop unchanged).
@@ -129,7 +135,7 @@ var Bindings = []Binding{
 	// the passkey round (C1): the relying-party identity — OPTIONAL, the
 	// feature is off when unset (the methods endpoint answers honestly)
 	{Key: "webauthn_rp_id", Envs: []string{"LUMEN_WEBAUTHN_RP_ID"}, Planes: role.PlaneAdmin},
-	{Key: "webauthn_origin", Envs: []string{"LUMEN_WEBAUTHN_ORIGIN"}, Planes: role.PlaneAdmin},
+	{Key: "webauthn_origins", Envs: []string{"LUMEN_WEBAUTHN_ORIGINS"}, Planes: role.PlaneAdmin},
 	{Key: "admin_url", Envs: []string{"LUMEN_ADMIN_URL"}, Planes: role.PlaneCMS},
 	{Key: "origin", Envs: []string{"LUMEN_ORIGIN"}, Planes: role.PlaneCMS},
 	{Key: "meili_url", Envs: []string{"LUMEN_MEILI_URL"}, Planes: role.PlaneCMS},
@@ -298,7 +304,7 @@ func Load() (Config, error) {
 		SessionSecret:    get("session_jwt_secret"),
 		AdminURL:         get("admin_url"),
 		WebAuthnRPID:     get("webauthn_rp_id"),
-		WebAuthnOrigin:   get("webauthn_origin"),
+		WebAuthnOrigins:  get("webauthn_origins"),
 		MeiliIndexPosts:  get("meili_index_posts"),
 		MeiliIndexPhotos: get("meili_index_photos"),
 		Media: Media{

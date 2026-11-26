@@ -143,6 +143,14 @@ func buildControlPlane(deps *dependencies) *admin.Handler {
 	} else {
 		log.Print("secrets plane: not configured — /admin/bao absent (honest, §9)")
 	}
+	if cfg.WebAuthnRPID != "" {
+		if err := svc.EnableWebAuthn(cfg.WebAuthnRPID, cfg.WebAuthnOrigins); err != nil {
+			log.Fatalf("webauthn config: %v", err)
+		}
+		log.Printf("webauthn: enabled (rp id %s, origins %s)", cfg.WebAuthnRPID, cfg.WebAuthnOrigins)
+	} else {
+		log.Print("webauthn: not configured — the passkey method is off (honest, C1)")
+	}
 	return admin.New(svc)
 }
 

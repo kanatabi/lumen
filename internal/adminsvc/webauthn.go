@@ -39,17 +39,29 @@ var (
 
 // EnableWebAuthn turns the passkey method ON (cmd wiring reads the
 // config; both values empty = off, the methods endpoint omits it, the
-// login UI degrades gracefully).
-func (s *Service) EnableWebAuthn(rpID, origin string) error {
+// login UI degrades gracefully). origins is the comma-separated list of
+// browser origins the ceremony accepts — ONE registrable-domain rp-id
+// serves every environment's mellon (console + staging-console), the
+// role-split design: identity shared, content per env.
+func (s *Service) EnableWebAuthn(rpID, origins string) error {
 	if rpID == "" {
 		return fmt.Errorf("webauthn: empty rp id")
 	}
-	if origin == "" {
-		origin = "https://" + rpID
+	if origins == "" {
+		origins = "https://" + rpID
+	}
+	list := make([]string, 0, 4)
+	for _, o := range strings.Split(origins, ",") {
+		if trimmed := strings.TrimSpace(o); trimmed != "" {
+			list = append(list, trimmed)
+		}
+	}
+	if len(list) == 0 {
+		return fmt.Errorf("webauthn: empty origins")
 	}
 	wa, err := webauthn.New(&webauthn.Config{
 		RPID:          rpID,
-		RPOrigins:     []string{origin},
+		RPOrigins:     list,
 		RPDisplayName: "gofar; console",
 	})
 	if err != nil {
