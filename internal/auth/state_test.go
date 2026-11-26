@@ -12,7 +12,9 @@ import (
 
 func TestStateRoundtrip(t *testing.T) {
 	secret := []byte("0123456789abcdef0123456789abcdef")
-	type body struct{ Challenge string `json:"c"` }
+	type body struct {
+		Challenge string `json:"c"`
+	}
 	token, err := SignState(secret, "passkey-login", "passkey", body{Challenge: "abc"})
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +30,9 @@ func TestStateRoundtrip(t *testing.T) {
 
 func TestStateTamper(t *testing.T) {
 	secret := []byte("0123456789abcdef0123456789abcdef")
-	type body struct{ Challenge string `json:"c"` }
+	type body struct {
+		Challenge string `json:"c"`
+	}
 	token, _ := SignState(secret, "passkey-login", "passkey", body{Challenge: "abc"})
 	// flip the payload's last character
 	parts := strings.Split(token, ".")
@@ -43,7 +47,9 @@ func TestStateTamper(t *testing.T) {
 
 func TestStatePurposeIsolation(t *testing.T) {
 	secret := []byte("0123456789abcdef0123456789abcdef")
-	type body struct{ Challenge string `json:"c"` }
+	type body struct {
+		Challenge string `json:"c"`
+	}
 	token, _ := SignState(secret, "passkey-login", "passkey", body{Challenge: "abc"})
 	var out body
 	if err := VerifyState(secret, "passkey-link", "passkey", token, &out); err == nil {

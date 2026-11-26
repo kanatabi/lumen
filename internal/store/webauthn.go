@@ -16,9 +16,9 @@ import (
 
 // WebAuthnCredential is one registered authenticator bound to a user.
 type WebAuthnCredential struct {
-	ID         string   // base64url credential id
-	UserID     string   // the users.id surrogate (UUID string)
-	PublicKey  []byte   // COSE key bytes
+	ID         string // base64url credential id
+	UserID     string // the users.id surrogate (UUID string)
+	PublicKey  []byte // COSE key bytes
 	SignCount  uint32
 	Transports []string
 	Label      string
