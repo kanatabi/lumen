@@ -284,6 +284,22 @@ attack; argon2id makes each guess expensive, the throttle makes them rare. Sessi
 state is minted *here*; mellon only carries it (cookie + relay), and honors
 `expiresIn` for its cookie lifetime.
 
+**The passkey method (the auth-method seam, C1, 2026-11-25).** Every login
+method normalizes to begin → finish → the ONE mint. WebAuthn: the private key
+never leaves the authenticator; `webauthn_credentials` (0012) holds the public
+half keyed on `users.id` (the credential's userHandle). Login is
+DISCOVERABLE — no username, the assertion names the credential and its owner,
+and a mismatched pair is the one denial voice. The relying party is the
+REGISTRABLE DOMAIN (`gofar.id`), not the console host: one shared admin serves
+console AND staging-console, so the credential space is shared on purpose (the
+recorded trade-off). The identity arrives as `LUMEN_WEBAUTHN_RP_ID` +
+`LUMEN_WEBAUTHN_ORIGINS` (comma list) on the admin plane; unset = the method is
+absent (routes answer "no such method", the methods probe omits it).
+Registration is authenticated and honors the must-change 428 gate; it never
+bumps `token_version` (it changes what can AUTHENTICATE, not what the session
+may do), while disabling does. A replayed assertion is refused by the
+signature counter (the library's clone warning; 0 → 0 never warns).
+
 ```
 POST   /admin/session                      → { token: JWT, expiresIn } (seconds —
                                              mellon sets its cookie maxAge from it;
@@ -295,6 +311,22 @@ DELETE /admin/session                      → 204: bumps users.token_version (r
                                              it best-effort at "end session", then
                                              clears its cookie regardless (the cookie
                                              is the portal's; the REVOCATION is ours)
+GET    /admin/session/auth/methods          → { methods: ["password","passkey"] } —
+                                             the login UI's capability probe (passkey
+                                             omitted when the admin has no rp identity)
+POST   /admin/session/webauthn/login/begin   → { state, options } — PUBLIC, discoverable
+                                             (no username). `state` is the HMAC'd,
+                                             5-minute carriage of the library's SessionData
+POST   /admin/session/webauthn/login/finish  → the SAME payload as POST /admin/session;
+                                             the mint happens here (replay = the counter
+                                             tripwire, never a second session)
+GET    /admin/session/webauthn               → { passkeys: [{ id, label, createdAt,
+                                             lastUsedAt }] } — the caller's own rows
+POST   /admin/session/webauthn/register/begin → { state, options } — AUTHENTICATED; the
+                                             credential binds to the session's user
+POST   /admin/session/webauthn/register/finish → 201 { passkey: { id, label, createdAt } };
+                                             409 when the credential id already exists
+DELETE /admin/session/webauthn/:id           → 204; the WHERE carries user_id (own rows only)
 GET    /admin/posts?status&tag&sort&dir&page&q → paged envelope { total, items, page,
                                              pageSize } (§1 shape + status; sort =
                                              updated|created|published|title, dir =
