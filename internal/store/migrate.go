@@ -43,6 +43,22 @@ var migrationRoles = map[string]role.Planes{
 	"0013_webauthn_flags.sql": role.PlaneAdmin, // the BE/BS flags the login validator compares (2026-11-27)
 }
 
+// MigrationCountForRole is the subset size the CLASSIFICATION implies.
+// Tests derive their expectation from this, never from a hand-kept
+// golden: a duplicated count drifts on every migration (the 0013 round
+// shipped a stale `want 5` into the integration tier for exactly that
+// reason — the map is the truth, the count is arithmetic).
+func MigrationCountForRole(rt role.Role) int {
+	planes := rt.Planes()
+	n := 0
+	for _, own := range migrationRoles {
+		if own.Has(planes) {
+			n++
+		}
+	}
+	return n
+}
+
 // Migrate applies the FULL schema (both planes) — the legacy "all" path,
 // kept as the honest default for dev and the existing batteries.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {

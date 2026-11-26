@@ -105,8 +105,8 @@ func TestMigrateForRole_FreshDatabases(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if n != 7 { // 0001,0003,0004,0005,0006,0008,0009
-			t.Fatalf("cms subset size = %d, want 7", n) // 0008 + 0009 joined the cms plane
+		if want := store.MigrationCountForRole(role.CMS); n != want {
+			t.Fatalf("cms subset size = %d, want %d (derived from the classification map)", n, want)
 		}
 		if hasTable(t, pool, "users") {
 			t.Fatal("RULING VIOLATION: a fresh cms database grew a users table")
@@ -124,8 +124,8 @@ func TestMigrateForRole_FreshDatabases(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if n != 5 { // 0002,0007 + the RBAC spine (0010,0011) + the passkey table (0012)
-			t.Fatalf("admin subset size = %d, want 5", n)
+		if want := store.MigrationCountForRole(role.Admin); n != want {
+			t.Fatalf("admin subset size = %d, want %d (derived from the classification map)", n, want)
 		}
 		if !hasTable(t, adminPool, "users") {
 			t.Fatal("admin database lost the users table")
