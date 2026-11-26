@@ -40,6 +40,7 @@ var migrationRoles = map[string]role.Planes{
 	"0010_rbac_scopes.sql":    role.PlaneAdmin, // the RBAC spine: users.id surrogate key, the scope catalog + grants, role column dropped (2026-11-24)
 	"0011_user_lifecycle.sql": role.PlaneAdmin, // the user-lifecycle verbs: the disabled flag (2026-11-24)
 	"0012_webauthn.sql":       role.PlaneAdmin, // the passkey credentials (the auth-method seam, 2026-11-25)
+	"0013_webauthn_flags.sql": role.PlaneAdmin, // the BE/BS flags the login validator compares (2026-11-27)
 }
 
 // Migrate applies the FULL schema (both planes) — the legacy "all" path,

@@ -287,7 +287,10 @@ state is minted *here*; mellon only carries it (cookie + relay), and honors
 **The passkey method (the auth-method seam, C1, 2026-11-25).** Every login
 method normalizes to begin → finish → the ONE mint. WebAuthn: the private key
 never leaves the authenticator; `webauthn_credentials` (0012) holds the public
-half keyed on `users.id` (the credential's userHandle). Login is
+half keyed on `users.id` (the credential's userHandle) plus the WebAuthn
+flags the validator reads back: `backup_eligible` (BE — invariant; a synced
+passkey is BE=1 and every login compares it) and `backup_state` (BS —
+refreshed on login; BE=0 + BS=1 is illegal). Login is
 DISCOVERABLE — no username, the assertion names the credential and its owner,
 and a mismatched pair is the one denial voice. The relying party is the
 REGISTRABLE DOMAIN (`gofar.id`), not the console host: one shared admin serves

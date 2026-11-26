@@ -39,6 +39,12 @@ type fakeAuthenticator struct {
 	origin string
 	userID []byte // the user handle the assertions carry
 	count  uint32
+	// the WebAuthn flags a REAL authenticator reports. A synced passkey
+	// (Bitwarden/iCloud) is BE=1, BS=1; a device-bound one BE=0, BS=0.
+	// The library STORES BE at registration and compares it on every
+	// login — the live 401 this battery now models.
+	be bool
+	bs bool
 }
 
 func newFakeAuth(t *testing.T, rpID, origin string, userID []byte) *fakeAuthenticator {
@@ -81,6 +87,19 @@ func (f *fakeAuthenticator) coseKey() []byte {
 	return b
 }
 
+// authFlags composes a ceremony's flags: UP always, the caller's bit
+// (AT on registration, UV on assertions), and the credential's BE/BS.
+func (f *fakeAuthenticator) authFlags(extra protocol.AuthenticatorFlags) byte {
+	fl := extra | protocol.FlagUserPresent
+	if f.be {
+		fl |= protocol.FlagBackupEligible
+	}
+	if f.bs {
+		fl |= protocol.FlagBackupState
+	}
+	return byte(fl)
+}
+
 func newAuthData(rpHash []byte, flags byte, count uint32, withCred bool, credID, cose []byte) []byte {
 	buf := bytes.NewBuffer(nil)
 	buf.Write(rpHash)
@@ -102,7 +121,7 @@ func newAuthData(rpHash []byte, flags byte, count uint32, withCred bool, credID,
 // registerResponse builds the browser's creation JSON (fmt "none" —
 // self-attestation; the rp verifies the key, not the vendor).
 func (f *fakeAuthenticator) registerResponse(challenge string) string {
-	auth := newAuthData(f.rpIDHash(), 0x41, f.count, true, f.credID, f.coseKey())
+	auth := newAuthData(f.rpIDHash(), f.authFlags(protocol.FlagAttestedCredentialData), f.count, true, f.credID, f.coseKey())
 	attObj, err := webauthncbor.Marshal(map[string]any{
 		"fmt": "none", "attStmt": map[string]any{}, "authData": auth,
 	})
@@ -124,7 +143,7 @@ func (f *fakeAuthenticator) registerResponse(challenge string) string {
 // assertion builds the browser's login JSON and advances the counter.
 func (f *fakeAuthenticator) assertion(challenge string) string {
 	f.count++
-	auth := newAuthData(f.rpIDHash(), 0x05, f.count, false, nil, nil)
+	auth := newAuthData(f.rpIDHash(), f.authFlags(protocol.FlagUserVerified), f.count, false, nil, nil)
 	cdj := f.clientData("webauthn.get", challenge)
 	cdHash := sha256.Sum256(cdj)
 	sigInput := append(append([]byte{}, auth...), cdHash[:]...)
@@ -196,6 +215,7 @@ func TestWebAuthnFlow(t *testing.T) {
 		}
 	}
 	fake := newFakeAuth(t, rpID, origin, uidBytes)
+	fake.be, fake.bs = true, true // the synced-passkey shape (live caught: BE=1)
 
 	// REGISTER (authenticated): begin -> the fake creates -> finish -> 201
 	code, res = h.admin("POST", "/admin/session/webauthn/register/begin", "")
@@ -303,6 +323,14 @@ func TestWebAuthnFlow(t *testing.T) {
 		`{"state":"`+begin.State+`","response":`+forged.assertion(begin.Options.PublicKey.Challenge)+`}`, "")
 	if code != 401 {
 		t.Fatalf("forged handle: %d %s", code, res)
+	}
+
+	// the DEVICE-BOUND credential (BE=0) mints too — both flag shapes work
+	code, res = h.do("POST", "/admin/session/webauthn/login/begin", "", "")
+	begin = unwrap(t, res)
+	if code, res = h.do("POST", "/admin/session/webauthn/login/finish",
+		`{"state":"`+begin.State+`","response":`+backup.assertion(begin.Options.PublicKey.Challenge)+`}`, ""); code != 200 {
+		t.Fatalf("device-bound login: %d %s", code, res)
 	}
 
 	// DELETE is scoped to the caller's own row and the roster reflects it

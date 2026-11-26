@@ -111,7 +111,13 @@ func toLib(rows []store.WebAuthnCredential) []webauthn.Credential {
 			PublicKey:       r.PublicKey,
 			AttestationType: "none",
 			Transport:       transport,
-			Authenticator:   webauthn.Authenticator{SignCount: r.SignCount},
+			// the library VALIDATES BackupEligible against every assertion;
+			// a zero value means "BE=0" and 401s every synced passkey.
+			Flags: webauthn.CredentialFlags{
+				BackupEligible: r.BackupEligible,
+				BackupState:    r.BackupState,
+			},
+			Authenticator: webauthn.Authenticator{SignCount: r.SignCount},
 		})
 	}
 	return out
@@ -214,7 +220,7 @@ func (s *Service) PasskeyLoginFinish(ctx context.Context, stateToken string, bod
 		return "", 0, Principal{}, ErrInvalidCredentials
 	}
 	// the replay tripwire: the counter moved, persist it
-	if err := s.store.WebAuthnTouchSignCount(ctx, row.ID, credential.Authenticator.SignCount); err != nil {
+	if err := s.store.WebAuthnTouchSignCount(ctx, row.ID, credential.Authenticator.SignCount, credential.Flags.BackupState); err != nil {
 		return "", 0, Principal{}, err
 	}
 	token, expiresIn, err := mintFor(s.jwtSecret, authRow)
@@ -314,6 +320,10 @@ func (s *Service) PasskeyRegisterFinish(ctx context.Context, p Principal, stateT
 		SignCount:  credential.Authenticator.SignCount,
 		Transports: transport,
 		Label:      label,
+		// BE is invariant and the login validator compares it; BS may move
+		// later (a key gets backed up) and is refreshed there.
+		BackupEligible: credential.Flags.BackupEligible,
+		BackupState:    credential.Flags.BackupState,
 	}
 	createdAt, err := s.store.WebAuthnCreateCredential(ctx, row)
 	if err != nil {

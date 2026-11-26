@@ -28,17 +28,24 @@ type WebAuthnCredential struct {
 	SignCount  uint32
 	Transports []string
 	Label      string
-	CreatedAt  string
-	LastUsedAt string
+	// The library's stored flags (0013): BE is invariant and VALIDATED on
+	// every login (a synced passkey is BE=1); BS may change and is
+	// refreshed on login. UP/UV are per-assertion, not credential facts.
+	BackupEligible bool
+	BackupState    bool
+	CreatedAt      string
+	LastUsedAt     string
 }
 
 const webauthnCols = `id, user_id, public_key, sign_count, transports, label,
+	backup_eligible, backup_state,
 	COALESCE(to_char(created_at, 'YYYY-MM-DD HH24:MI'), ''),
 	COALESCE(to_char(last_used_at, 'YYYY-MM-DD HH24:MI'), '')`
 
 func scanWebAuthn(row pgx.Row) (WebAuthnCredential, error) {
 	var c WebAuthnCredential
-	err := row.Scan(&c.ID, &c.UserID, &c.PublicKey, &c.SignCount, &c.Transports, &c.Label, &c.CreatedAt, &c.LastUsedAt)
+	err := row.Scan(&c.ID, &c.UserID, &c.PublicKey, &c.SignCount, &c.Transports, &c.Label,
+		&c.BackupEligible, &c.BackupState, &c.CreatedAt, &c.LastUsedAt)
 	return c, err
 }
 
@@ -49,10 +56,12 @@ func scanWebAuthn(row pgx.Row) (WebAuthnCredential, error) {
 func (g *PG) WebAuthnCreateCredential(ctx context.Context, c WebAuthnCredential) (string, error) {
 	var createdAt string
 	err := g.pool.QueryRow(ctx,
-		`INSERT INTO webauthn_credentials (id, user_id, public_key, sign_count, transports, label)
-		 VALUES ($1, $2, $3, $4, $5, $6)
+		`INSERT INTO webauthn_credentials (id, user_id, public_key, sign_count, transports, label,
+		                                   backup_eligible, backup_state)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 RETURNING COALESCE(to_char(created_at, 'YYYY-MM-DD HH24:MI'), '')`,
-		c.ID, c.UserID, c.PublicKey, c.SignCount, c.Transports, c.Label).Scan(&createdAt)
+		c.ID, c.UserID, c.PublicKey, c.SignCount, c.Transports, c.Label,
+		c.BackupEligible, c.BackupState).Scan(&createdAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -97,10 +106,14 @@ func (g *PG) WebAuthnCredentialByID(ctx context.Context, id string) (WebAuthnCre
 
 // WebAuthnTouchSignCount persists the replay tripwire after a verified
 // assertion (the counter must move; a static counter = a cloned key).
-func (g *PG) WebAuthnTouchSignCount(ctx context.Context, id string, count uint32) error {
+func (g *PG) WebAuthnTouchSignCount(ctx context.Context, id string, count uint32, backupState bool) error {
+	// BS can legitimately change (the key is synced/backed up later); BE
+	// must NEVER change, so it is not written here.
 	_, err := g.pool.Exec(ctx,
-		`UPDATE webauthn_credentials SET sign_count = $2, last_used_at = now() WHERE id = $1`,
-		id, count)
+		`UPDATE webauthn_credentials
+		    SET sign_count = $2, backup_state = $3, last_used_at = now()
+		  WHERE id = $1`,
+		id, count, backupState)
 	return err
 }
 
