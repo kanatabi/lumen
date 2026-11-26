@@ -25,6 +25,8 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/protocol/webauthncbor"
+	"github.com/kanatabi/lumen/internal/session"
+	"github.com/kanatabi/lumen/internal/store"
 )
 
 // fakeAuthenticator is a real WebAuthn credential: a private key the
@@ -311,6 +313,28 @@ func TestWebAuthnFlow(t *testing.T) {
 	if code, res = h.admin("GET", "/admin/session/webauthn", ""); code != 200 ||
 		!bytes.Contains(res, []byte("Bitwarden")) || bytes.Contains(res, []byte("Backup key")) {
 		t.Fatalf("roster after delete: %d %s", code, res)
+	}
+
+	// ISOLATION: another account sees an empty roster and cannot delete a
+	// credential it does not own — the WHERE carries user_id, and the
+	// roster resolves the principal (never an id from the wire).
+	hash, err := session.HashPassword("integration-pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.NewPG(h.pool).UpsertUser(context.Background(), "fzr-other", hash); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = h.pool.Exec(context.Background(), `DELETE FROM users WHERE username='fzr-other'`)
+	})
+	otherToken := h.login("fzr-other", "integration-pw")
+	if code, res = h.do("GET", "/admin/session/webauthn", "", otherToken); code != 200 ||
+		!bytes.Contains(res, []byte(`"passkeys":[]`)) {
+		t.Fatalf("foreign roster: %d %s", code, res)
+	}
+	if code, res = h.do("DELETE", "/admin/session/webauthn/"+base64.RawURLEncoding.EncodeToString(fake.credID), "", otherToken); code != 404 {
+		t.Fatalf("foreign delete: %d %s", code, res)
 	}
 
 	// DISABLED: the passkey door respects the flag (the same distinct 403)
