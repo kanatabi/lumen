@@ -203,7 +203,7 @@ func (g *PG) InsertUser(ctx context.Context, username, passhash string, scopes [
 			  WHERE u.username = $1`, username).Scan(&granted); err != nil {
 			return err
 		}
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM unnest($2::text[])`, scopes).Scan(&want); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM unnest($1::text[])`, scopes).Scan(&want); err != nil {
 			return err
 		}
 		if granted != want {
