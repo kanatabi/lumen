@@ -95,13 +95,14 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, http.StatusBadRequest, "json body required")
 		return
 	}
-	temp, err := h.svc.CreateUserWithTemp(r.Context(), in.Username, in.Scopes)
+	temp, id, err := h.svc.CreateUserWithTemp(r.Context(), in.Username, in.Scopes)
 	switch {
 	case err == nil:
 		// the temp appears in THIS response and nowhere else — not logs,
-		// not the DB (argon2id hash only)
+		// not the DB (argon2id hash only); the id is the surrogate key
+		// (the RBAC spine) — the portal's rows key on it
 		httpx.WriteJSON(w, http.StatusCreated, map[string]any{
-			"username": in.Username, "scopes": in.Scopes, "tempPassword": temp,
+			"username": in.Username, "scopes": in.Scopes, "tempPassword": temp, "id": id,
 		})
 	case errors.Is(err, adminsvc.ErrBadUsername):
 		httpx.WriteErr(w, http.StatusBadRequest, err.Error())

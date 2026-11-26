@@ -105,8 +105,8 @@ func TestMigrateForRole_FreshDatabases(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if n != 6 { // 0001,0003,0004,0005,0006
-			t.Fatalf("cms subset size = %d, want 6", n) // 0008 joined the cms plane
+		if n != 7 { // 0001,0003,0004,0005,0006,0008,0009
+			t.Fatalf("cms subset size = %d, want 7", n) // 0008 + 0009 joined the cms plane
 		}
 		if hasTable(t, pool, "users") {
 			t.Fatal("RULING VIOLATION: a fresh cms database grew a users table")
@@ -124,8 +124,8 @@ func TestMigrateForRole_FreshDatabases(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if n != 2 { // 0002 + 0007
-			t.Fatalf("admin subset size = %d, want 2", n)
+		if n != 5 { // 0002,0007 + the RBAC spine (0010,0011) + the passkey table (0012)
+			t.Fatalf("admin subset size = %d, want 5", n)
 		}
 		if !hasTable(t, adminPool, "users") {
 			t.Fatal("admin database lost the users table")
@@ -189,8 +189,15 @@ func TestRoleSplit_VerifyDoorAndCMSPlane(t *testing.T) {
 	}
 	token := res["token"].(string)
 
+	// DIAGNOSTIC: whoami with the same token first — isolates mint-broken
+	// from verify-broken
+	code, res, raw = callJSON(t, adminSrv.URL+"/admin/session", http.MethodGet, token, nil)
+	if code != http.StatusOK {
+		t.Fatalf("whoami with the TOFU token: %d %s", code, raw)
+	}
+
 	// verify — THE WIRE SHAPE mellon/agents must match, asserted verbatim
-	code, res, raw = callJSON(t, adminSrv.URL+"/admin/session/verify", http.MethodPost, "Bearer "+token, nil)
+	code, res, raw = callJSON(t, adminSrv.URL+"/admin/session/verify", http.MethodPost, token, nil)
 	if code != http.StatusOK {
 		t.Fatalf("verify live token: %d %s", code, raw)
 	}
@@ -206,7 +213,7 @@ func TestRoleSplit_VerifyDoorAndCMSPlane(t *testing.T) {
 	}
 
 	// the admin plane has NO content surface (honest absence)
-	if code, _, _ := callJSON(t, adminSrv.URL+"/admin/posts", http.MethodGet, "Bearer "+token, nil); code != http.StatusNotFound {
+	if code, _, _ := callJSON(t, adminSrv.URL+"/admin/posts", http.MethodGet, token, nil); code != http.StatusNotFound {
 		t.Fatalf("admin plane served a content desk: %d", code)
 	}
 	if code, _, _ := callJSON(t, adminSrv.URL+"/api/posts", http.MethodGet, "", nil); code != http.StatusNotFound {
@@ -232,7 +239,7 @@ func TestRoleSplit_VerifyDoorAndCMSPlane(t *testing.T) {
 	defer cmsSrv.Close()
 
 	// desk answers while the session lives…
-	if code, _, raw := callJSON(t, cmsSrv.URL+"/admin/posts", http.MethodGet, "Bearer "+token, nil); code != http.StatusOK {
+	if code, _, raw := callJSON(t, cmsSrv.URL+"/admin/posts", http.MethodGet, token, nil); code != http.StatusOK {
 		t.Fatalf("cms desk with valid session: %d %s", code, raw)
 	}
 	// …and the mint is NOT on this plane (404 = absence, not theater)
@@ -240,17 +247,17 @@ func TestRoleSplit_VerifyDoorAndCMSPlane(t *testing.T) {
 		t.Fatalf("cms plane can MINT sessions: %d", code)
 	}
 	// dead token straight to the door → 401 at the desk
-	if code, _, _ := callJSON(t, cmsSrv.URL+"/admin/posts", http.MethodGet, "Bearer garbage.jwt.here", nil); code != http.StatusUnauthorized {
+	if code, _, _ := callJSON(t, cmsSrv.URL+"/admin/posts", http.MethodGet, "garbage.jwt.here", nil); code != http.StatusUnauthorized {
 		t.Fatalf("cms desk accepted a forged bearer: %d", code)
 	}
 
 	// revocation propagates within the cache window (TTL shortened for
 	// the test; production bound is the documented 30 s)
-	if code, _, _ := callJSON(t, cmsSrv.URL+"/admin/session", http.MethodDelete, "Bearer "+token, nil); code != http.StatusNoContent {
+	if code, _, _ := callJSON(t, adminSrv.URL+"/admin/session", http.MethodDelete, token, nil); code != http.StatusNoContent {
 		t.Fatalf("logout at admin: %d", code)
 	}
 	time.Sleep(150 * time.Millisecond)
-	if code, _, _ := callJSON(t, cmsSrv.URL+"/admin/posts", http.MethodGet, "Bearer "+token, nil); code != http.StatusUnauthorized {
+	if code, _, _ := callJSON(t, cmsSrv.URL+"/admin/posts", http.MethodGet, token, nil); code != http.StatusUnauthorized {
 		t.Fatalf("REVOKED session still serves the cms desk after the cache window: %d", code)
 	}
 

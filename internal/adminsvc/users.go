@@ -83,26 +83,30 @@ func (s *Service) ListUsers(ctx context.Context) ([]store.UserRow, error) {
 // (the spine ruling): the admin's picker IS the grant. The temp is
 // returned EXACTLY ONCE — the caller's response, nothing else; it is not
 // logged and not recoverable.
-func (s *Service) CreateUserWithTemp(ctx context.Context, username string, granted []string) (string, error) {
+func (s *Service) CreateUserWithTemp(ctx context.Context, username string, granted []string) (string, string, error) {
 	username = strings.TrimSpace(username)
 	if !validUsername.MatchString(username) {
-		return "", ErrBadUsername
+		return "", "", ErrBadUsername
 	}
 	for _, sc := range granted {
 		if !scopes.Valid(sc) {
-			return "", ErrBadUsername
+			return "", "", ErrBadUsername
 		}
 	}
 	temp := generateTempPassword()
 	hash, err := session.HashPassword(temp)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := s.store.InsertUser(ctx, username, hash, granted); err != nil {
-		return "", err
+		return "", "", err
+	}
+	auth, ok, err := s.store.AuthFor(ctx, username)
+	if err != nil || !ok {
+		return "", "", err
 	}
 	slog.Info("users.create", "user", username, "scopes", granted)
-	return temp, nil
+	return temp, auth.ID, nil
 }
 
 // ResetPassword issues a NEW temp, arms must_change and bumps token_version

@@ -31,6 +31,7 @@ import (
 	"github.com/kanatabi/lumen/internal/api"
 	"github.com/kanatabi/lumen/internal/api/admin"
 	"github.com/kanatabi/lumen/internal/api/public"
+	"github.com/kanatabi/lumen/internal/bao"
 	"github.com/kanatabi/lumen/internal/media"
 	"github.com/kanatabi/lumen/internal/queue"
 	"github.com/kanatabi/lumen/internal/role"
@@ -69,8 +70,18 @@ func newAdminHarness(t *testing.T) *adminHarness {
 	if err := pool.Ping(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+
 	// test hygiene: purge any residue of THIS suite (hard deletes — hygiene
 	// is not the product path). Run-to-run idempotence, not seed-to-seed luck.
+	if err := queue.MigrateUp(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	// the purge rides AFTER both migrations (store + queue): a fresh
+	// database's missing tables must not kill the hygiene pass — both
+	// migrations are idempotent, so the order is safe either way
 	for _, stmt := range []string{
 		`DELETE FROM posts WHERE slug LIKE 'integration-%'`,
 		`DELETE FROM tags WHERE name LIKE 'integration-%'`,
@@ -81,12 +92,6 @@ func newAdminHarness(t *testing.T) *adminHarness {
 		if _, err := pool.Exec(context.Background(), stmt); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := store.Migrate(ctx, pool); err != nil {
-		t.Fatal(err)
-	}
-	if err := queue.MigrateUp(ctx, pool); err != nil {
-		t.Fatal(err)
 	}
 	hash, err := session.HashPassword("integration-pw")
 	if err != nil {
@@ -128,6 +133,17 @@ func newAdminHarness(t *testing.T) *adminHarness {
 	t.Cleanup(func() { _ = queueClient.Stop(context.Background()) })
 
 	adminSvc := adminsvc.New(pg, queueClient, searchEngine, secret, throttle.New(time.Minute))
+	// the §9 relay mirrors the boot hook (bao.Enabled(): addr+role+secret):
+	// the RBACScopes suite asserts the SCOPE GATE on /admin/bao/*, which
+	// only exists when the plane is configured — same honest absence.
+	if os.Getenv("LUMEN_BAO_ADDR") != "" && os.Getenv("LUMEN_BAO_ROLE_ID") != "" &&
+		os.Getenv("LUMEN_BAO_SECRET_ID") != "" {
+		baoClient, err := bao.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		adminSvc.EnableBao(baoClient)
+	}
 	build := func() http.Handler {
 		return api.NewRouter(public.New(service.New(pg, searchEngine), searchEngine), admin.New(adminSvc), role.PlanesAll)
 	}
@@ -324,25 +340,44 @@ func TestUserLifecycle(t *testing.T) {
 		t.Fatalf("self-delete: %d %s", code, res)
 	}
 
-	// 7. the lockout guard: demote the admin, then deleting the LAST
-	//    users:manage holder is 409 — the counts ride the copy
+	// 7. the delete path through the SCOPE GATE: a demoted admin loses
+	//    the desk (403 — the gate fires first); the grant restore makes
+	//    the delete terminal. The last-manager 409 remains the
+	//    belt-and-braces behind this gate: with the actor always
+	//    surviving their own grant, its reachable-API form is the
+	//    successful delete of a non-last manager — the 409 itself
+	//    documents direct-SQL drift. THE RECORDED GAP (the RBAC ADR's
+	//    addendum): the scopes-PATCH self-demotion to zero managers has
+	//    no guard — that is the lockout path the 409 was imagined for.
+	// the demote rides the STILL-VALID token (fzr is not bumped yet);
+	// the bump lands with this PATCH, so everything after re-logins
 	if code, _ := harness.admin("PATCH", "/admin/users/fzr-test/scopes",
 		`{"scopes":["content:manage"]}`); code != http.StatusOK {
 		t.Fatalf("demote admin: %d", code)
 	}
-	adminTok := harness.login("fzr-test", "integration-pw") // the bump killed the old token
-	if code, res := harness.admin("DELETE", "/admin/users/lc-ed", ""); code != http.StatusConflict ||
-		!strings.Contains(string(res), "last users:manage holder") {
-		t.Fatalf("last-manager delete: %d %s", code, res)
+	adminTok := harness.login("fzr-test", "integration-pw")
+	if code, res := harness.do("DELETE", "/admin/users/lc-ed", "", adminTok); code != http.StatusForbidden ||
+		!strings.Contains(string(res), "users:manage required") {
+		t.Fatalf("demoted admin delete: %d %s", code, res)
 	}
-	// 8. restore the admin's grant, THEN the delete works and is terminal
-	if code, _ := harness.admin("PATCH", "/admin/users/fzr-test/scopes",
-		`{"scopes":["content:manage","secrets:admin","users:manage","settings:manage"]}`); code != http.StatusOK {
-		t.Fatalf("restore admin: %d", code)
+	// 8. THE LOCKOUT IS REAL: the demoted admin cannot self-restore
+	//    (the restore PATCH is itself users:manage-gated — 403). The
+	//    recovery is the documented manual path (SQL), then the flow
+	//    resumes. This gap is recorded in the RBAC ADR's addendum: a
+	//    second users:manage holder (or the Bao-emergency path) is the
+	//    operational answer.
+	if _, err := harness.pool.Exec(ctx,
+		`INSERT INTO user_scopes (user_id, scope)
+		   SELECT u.id, s.scope FROM users u CROSS JOIN (VALUES
+		     ('content:manage'), ('secrets:admin'), ('users:manage'), ('settings:manage')
+		   ) AS s(scope)
+		  WHERE u.username = 'fzr-test'
+		  ON CONFLICT (user_id, scope) DO NOTHING`); err != nil {
+		t.Fatal(err)
 	}
 	adminTok = harness.login("fzr-test", "integration-pw")
-	if code, _ := harness.admin("DELETE", "/admin/users/lc-ed", ""); code != http.StatusOK {
-		t.Fatalf("delete: %d", code)
+	if code, _ := harness.do("DELETE", "/admin/users/lc-ed", "", adminTok); code != http.StatusOK {
+		t.Fatalf("delete: %d %s", code, res)
 	}
 	if code, _ := harness.do("POST", "/admin/session",
 		`{"username":"lc-ed","password":"lc-ed-chosen-2"}`, ""); code != http.StatusUnauthorized {
@@ -1003,6 +1038,9 @@ func TestTagDesk(t *testing.T) {
 	if code, _ = harness.admin(http.MethodPost, "/admin/posts/integration-tagging/unpublish", ""); code != http.StatusOK {
 		t.Fatalf("unpublish %d", code)
 	}
+	// the engine's counts ride the QUEUE (the reindex tasks) — drain or
+	// the public widget reads a pre-reindex count (the suite-order race)
+	harness.drain()
 	if code, res = harness.admin(http.MethodGet, "/admin/tags", ""); code != http.StatusOK || !bytes.Contains(res, []byte(`"name":"integration-tag-beta","posts":0`)) {
 		t.Fatalf("count did not zero on unpublish: %d %s", code, res)
 	}
