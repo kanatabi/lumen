@@ -14,14 +14,21 @@ package scopes
 
 import "regexp"
 
-// The seed catalog — the migration inserts exactly these. New scopes are
-// onboarded via the portal, never by editing this list (the list is the
-// bootstrap, not the registry).
+// The seed catalog — the MIGRATIONS insert exactly these (0010: the first
+// four; 0014: the tasks trio). New scopes are onboarded via the portal,
+// never by editing this list (the list is the bootstrap, not the
+// registry).
 const (
 	ContentManage  = "content:manage"
 	SecretsAdmin   = "secrets:admin"
 	UsersManage    = "users:manage"
 	SettingsManage = "settings:manage"
+	// the tasks application (the app-center direction, 2026-11-27): three
+	// verbs — reads and the workspace need ANY of them; project roles are
+	// the second key inside a project.
+	TasksCreate = "tasks:create"
+	TasksUpdate = "tasks:update"
+	TasksManage = "tasks:manage"
 )
 
 // Seed is the bootstrap catalog in the order the UI lists it.
@@ -33,6 +40,9 @@ var Seed = []struct {
 	{SecretsAdmin, "the whole Bao cockpit: values, pins, app onboarding, the estate matrix"},
 	{UsersManage, "user creation, scope assignment, the scope catalog, password resets"},
 	{SettingsManage, "portal-level settings (reserved; gated when settings grow)"},
+	{TasksCreate, "the tasks workspace: create projects and tasks"},
+	{TasksUpdate, "the tasks workspace: edit tasks, subtasks, comments, toggles"},
+	{TasksManage, "the tasks workspace: project settings, invites, members and roles"},
 }
 
 // ContentBundle is what today's editors effectively hold — the migration's

@@ -116,6 +116,12 @@ func TestMigrateForRole_FreshDatabases(t *testing.T) {
 				t.Fatalf("cms database missing %s", want)
 			}
 		}
+		// the tasks + notifications families are ADMIN data (0014/0015)
+		for _, forbidden := range []string{"task_projects", "task_tasks", "notifications"} {
+			if hasTable(t, pool, forbidden) {
+				t.Fatalf("cms database grew the admin table %s", forbidden)
+			}
+		}
 	})
 
 	t.Run("admin subset yields credentials only", func(t *testing.T) {
@@ -133,6 +139,15 @@ func TestMigrateForRole_FreshDatabases(t *testing.T) {
 		for _, forbidden := range []string{"posts", "photos", "tags", "collections", "media_assets", "river_job"} {
 			if hasTable(t, adminPool, forbidden) {
 				t.Fatalf("admin database grew %s", forbidden)
+			}
+		}
+		for _, want := range []string{
+			"task_projects", "task_project_members", "task_project_invites",
+			"task_tasks", "task_subtasks", "task_comments", "task_activity",
+			"notifications",
+		} {
+			if !hasTable(t, adminPool, want) {
+				t.Fatalf("admin database missing %s", want)
 			}
 		}
 	})

@@ -29,8 +29,14 @@ func TestSeedCoversTheCatalog(t *testing.T) {
 		}
 		seen[s.Scope] = true
 	}
-	if len(Seed) != 4 {
-		t.Fatalf("seed catalog drifted: %d entries, want 4 (new scopes are PORTAL-ONBOARDED, not code-seeded)", len(Seed))
+	// The CLASSIC bootstrap set must never vanish. A hardcoded TOTAL is a
+	// duplicated golden that drifts (the migration-subset count taught it):
+	// feature migrations may seed their own scopes (0014's tasks trio), and
+	// the RUNTIME catalog stays portal-managed.
+	for _, required := range []string{ContentManage, SecretsAdmin, UsersManage, SettingsManage} {
+		if !seen[required] {
+			t.Fatalf("bootstrap scope %q vanished from the seed — the classic four are load-bearing", required)
+		}
 	}
 }
 
