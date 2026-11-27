@@ -808,3 +808,118 @@ func TestOnUserDeletedRepairsProjects(t *testing.T) {
 		t.Fatalf("re-run changed project A: %+v", members)
 	}
 }
+
+// TestDisplayNameRollupsAndInviteeSearch pins the identity boundary: display
+// names are LABELS (the assignee/member references stay users.id UUIDs), and
+// the invite typeahead matches username/display prefixes or an EXACT email
+// while excluding members, pending invitees and disabled accounts.
+func TestDisplayNameRollupsAndInviteeSearch(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	setProfile := func(id, name, email string) {
+		t.Helper()
+		if _, err := f.pool.Exec(ctx,
+			`UPDATE users SET display_name = $2, email = NULLIF($3, '') WHERE id = $1::uuid`,
+			id, name, email); err != nil {
+			t.Fatalf("set profile: %v", err)
+		}
+	}
+	setProfile(f.alice, "Alice Archer", "alice@example.com")
+	setProfile(f.bob, "Bob Builder", "bob@example.com")
+	setProfile(f.carol, "Carol Danvers", "carol@example.com")
+
+	project := f.mustProject(f.alice, "Home")
+	f.addMember(project.ID, f.alice, f.bob)
+	task := f.mustTask(f.alice, project.ID, TaskInput{Title: "Fix gate", AssignedTo: ptr(f.bob)})
+
+	// the FK is the id; the label is the display name
+	detail, err := f.store.GetTask(ctx, f.alice, task.ID)
+	mustNoErr(t, err, "get assigned task")
+	if detail.Task.AssignedTo == nil || *detail.Task.AssignedTo != f.bob {
+		t.Fatalf("assignee FK = %v, want bob's users.id", detail.Task.AssignedTo)
+	}
+	if detail.Task.AssigneeName == nil || *detail.Task.AssigneeName != "Bob Builder" {
+		t.Fatalf("assignee label = %v, want the display name", detail.Task.AssigneeName)
+	}
+	if detail.Task.CreatorName == nil || *detail.Task.CreatorName != "Alice Archer" {
+		t.Fatalf("creator label = %v, want the display name", detail.Task.CreatorName)
+	}
+	members, err := f.store.ListMembers(ctx, f.alice, project.ID)
+	mustNoErr(t, err, "roster")
+	names := map[string]string{}
+	for _, member := range members {
+		names[member.UserID] = member.Name
+	}
+	if names[f.alice] != "Alice Archer" || names[f.bob] != "Bob Builder" {
+		t.Fatalf("roster names = %+v", names)
+	}
+
+	// display-name prefix finds the non-member; members and the caller never
+	// appear (both are on the roster)
+	people, err := f.store.SearchInvitees(ctx, f.alice, project.ID, "car", 8)
+	mustNoErr(t, err, "search by display prefix")
+	if len(people) != 1 || people[0].Username != "carol" || people[0].Name != "Carol Danvers" {
+		t.Fatalf("display-prefix search = %+v", people)
+	}
+	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "bob", 8); len(people) != 0 {
+		t.Fatalf("member leaked into suggestions: %+v", people)
+	}
+	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "ali", 8); len(people) != 0 {
+		t.Fatalf("caller leaked into suggestions: %+v", people)
+	}
+
+	// username prefix works too (carol is still a non-member here)
+	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "caro", 8); len(people) != 1 {
+		t.Fatalf("username-prefix search = %+v", people)
+	}
+
+	// email is EXACT and case-insensitive; a partial address never matches
+	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "carol@example.com", 8); len(people) != 1 {
+		t.Fatalf("exact email search = %+v", people)
+	}
+	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "carol@example", 8); len(people) != 0 {
+		t.Fatalf("partial email matched (must be exact-only): %+v", people)
+	}
+
+	// a live pending invite removes the person from suggestions
+	invite, err := f.store.CreateInvite(ctx, f.alice, project.ID, f.carol, time.Now().Add(time.Hour))
+	mustNoErr(t, err, "invite carol")
+	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "carol", 8); len(people) != 0 {
+		t.Fatalf("pending invitee still suggested: %+v (invite %s)", people, invite.ID)
+	}
+
+	// expired invites do not suppress the row (only live pending ones)
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE task_project_invites SET expires_at = now() - interval '1 hour' WHERE id = $1::uuid`,
+		invite.ID); err != nil {
+		t.Fatalf("expire invite: %v", err)
+	}
+	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "carol", 8); len(people) != 1 {
+		t.Fatalf("expired invite suppressed the candidate: %+v", people)
+	}
+
+	// disabled accounts are not suggested
+	if _, err := f.pool.Exec(ctx, `UPDATE users SET disabled = true WHERE id = $1::uuid`, f.carol); err != nil {
+		t.Fatalf("disable carol: %v", err)
+	}
+	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "carol", 8); len(people) != 0 {
+		t.Fatalf("disabled account suggested: %+v", people)
+	}
+
+	// the admin check is the second key: a member is forbidden, a non-member
+	// project is not-found (the tasks module's one denial voice)
+	mustErr(t, func() error {
+		_, err := f.store.SearchInvitees(ctx, f.bob, project.ID, "carol", 8)
+		return err
+	}(), ErrForbidden, "member search")
+	mustErr(t, func() error {
+		_, err := f.store.SearchInvitees(ctx, f.carol, project.ID, "alice", 8)
+		return err
+	}(), ErrNotFound, "non-member search")
+
+	// the cap is the store's too (a limit of 0 is an empty menu, not a dump)
+	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "a", 0); len(people) != 0 {
+		t.Fatalf("zero limit returned rows: %+v", people)
+	}
+}

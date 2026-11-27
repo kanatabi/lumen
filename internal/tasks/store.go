@@ -98,13 +98,23 @@ type Project struct {
 }
 
 // Member is one roster line. Username rides the users.id identity seam for
-// display only — no other user column is read.
+// display only — no other user column is read. Name is the account's display
+// name (the roster's primary label); the username stays the disambiguator.
 type Member struct {
 	UserID    string
 	Username  string
+	Name      string
 	Role      string
 	InvitedBy *string
 	JoinedAt  time.Time
+}
+
+// InviteeCandidate is one invite-typeahead row. Username + display name are
+// the ONLY user columns the tasks plane reads back; email is a MATCH KEY
+// (exact, case-insensitive) and is deliberately never selected.
+type InviteeCandidate struct {
+	Username string
+	Name     string
 }
 
 // Invite is one pending invitation, hydrated with the project and inviter
@@ -121,8 +131,9 @@ type Invite struct {
 }
 
 // Task is one task row plus the display rollups the grouped workspace needs.
-// AssignedTo/CreatedBy are the users.id handles; AssigneeName/CreatorName are
-// the display names (NULL when the account was deleted — the row survives).
+// AssignedTo/CreatedBy are the users.id handles — the ONLY identity the write
+// paths accept; AssigneeName/CreatorName are read-only labels rendered from
+// users.display_name (NULL when the account was deleted — the row survives).
 type Task struct {
 	ID           string
 	ProjectID    string
@@ -529,7 +540,7 @@ func (s *Store) SoftDeleteProject(ctx context.Context, callerID, projectID strin
 // project always has at least one member, so zero is denial, not empty).
 func (s *Store) ListMembers(ctx context.Context, callerID, projectID string) ([]Member, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT m.user_id, u.username, m.role, m.invited_by, m.joined_at
+		SELECT m.user_id, u.username, u.display_name, m.role, m.invited_by, m.joined_at
 		  FROM task_project_members m
 		  JOIN users u ON u.id = m.user_id
 		  JOIN task_projects p ON p.id = m.project_id
@@ -545,7 +556,7 @@ func (s *Store) ListMembers(ctx context.Context, callerID, projectID string) ([]
 	out := []Member{}
 	for rows.Next() {
 		var member Member
-		if err := rows.Scan(&member.UserID, &member.Username, &member.Role,
+		if err := rows.Scan(&member.UserID, &member.Username, &member.Name, &member.Role,
 			&member.InvitedBy, &member.JoinedAt); err != nil {
 			return nil, err
 		}
@@ -558,6 +569,61 @@ func (s *Store) ListMembers(ctx context.Context, callerID, projectID string) ([]
 		return nil, ErrNotFound
 	}
 	return out, nil
+}
+
+// SearchInvitees is the invite typeahead: the project-admin's people search.
+// It matches username prefix (ranked first), display-name prefix, or the
+// EXACT case-insensitive email — the caller passes an already-lowercased,
+// trimmed query. Members, the caller, disabled accounts and people with a
+// live pending invite are excluded so every row is actionable. The email is
+// a predicate only; it is never returned (the profile round's privacy rule).
+func (s *Store) SearchInvitees(ctx context.Context, callerID, projectID, query string, limit int) ([]InviteeCandidate, error) {
+	// A read-only role check, not the write verbs' lockProjectRole: a search
+	// must never queue behind (or block) project settings writes.
+	var role string
+	err := s.pool.QueryRow(ctx, `
+		SELECT m.role
+		  FROM task_projects p
+		  JOIN task_project_members m
+		    ON m.project_id = p.id AND m.user_id = $2::uuid
+		 WHERE p.id = $1::uuid
+		   AND p.deleted_at IS NULL`, projectID, callerID).Scan(&role)
+	if err != nil {
+		return nil, notFound(err)
+	}
+	if role != "admin" {
+		return nil, ErrForbidden
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT u.username, u.display_name
+		  FROM users u
+		 WHERE u.id <> $1::uuid
+		   AND NOT u.disabled
+		   AND (starts_with(lower(u.username), $2)
+		        OR starts_with(lower(u.display_name), $2)
+		        OR u.email = $2)
+		   AND NOT EXISTS (SELECT 1 FROM task_project_members m
+		                    WHERE m.project_id = $3::uuid AND m.user_id = u.id)
+		   AND NOT EXISTS (SELECT 1 FROM task_project_invites i
+		                    WHERE i.project_id = $3::uuid AND i.invitee_id = u.id
+		                      AND i.expires_at > now())
+		 ORDER BY (u.username = $2) DESC,
+		          starts_with(lower(u.username), $2) DESC,
+		          u.username
+		 LIMIT $4`, callerID, query, projectID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []InviteeCandidate{}
+	for rows.Next() {
+		var candidate InviteeCandidate
+		if err := rows.Scan(&candidate.Username, &candidate.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, candidate)
+	}
+	return out, rows.Err()
 }
 
 // SetMemberRole is admin-only (C2: many admins, promote AND demote). It locks
@@ -865,8 +931,8 @@ func (s *Store) RevokeInvite(ctx context.Context, callerID, projectID, inviteID 
 // ---- tasks ----
 
 const taskSelect = `
-	SELECT t.id, t.project_id, p.name, t.created_by, creator.username,
-	       t.assigned_to, assignee.username,
+	SELECT t.id, t.project_id, p.name, t.created_by, creator.display_name,
+	       t.assigned_to, assignee.display_name,
 	       t.title, t.notes, t.priority, t.due_at, t.done, t.done_at,
 	       t.deleted_at, t.created_at, t.updated_at,
 	       (SELECT count(*) FROM task_comments c WHERE c.task_id = t.id),

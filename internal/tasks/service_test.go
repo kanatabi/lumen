@@ -547,3 +547,43 @@ func TestServiceStatsInJakarta(t *testing.T) {
 		t.Fatalf("jakarta today view = %d tasks, want 3", len(today))
 	}
 }
+
+// TestInviteUsername keeps the wire's friendly "@name" spelling honest:
+// the stored invite resolves the bare username.
+func TestInviteUsername(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{" bob ", "bob"},
+		{"@bob", "bob"},
+		{"  @bob  ", "bob"},
+		{"@@bob", "@bob"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := inviteUsername(c.in); got != c.want {
+			t.Errorf("inviteUsername(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestInviteeQueryNormalization pins the typeahead's input grammar: trimmed,
+// lowercased, the UI's leading "@" dropped, and capped at the email maximum
+// (a legal address is never truncated into a miss).
+func TestInviteeQueryNormalization(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"  @Sarah ", "sarah"},
+		{"@CAROL@Example.COM", "carol@example.com"},
+		{"@@sarah", "@sarah"},
+		{"", ""},
+		{"   ", ""},
+		{"bob", "bob"},
+	}
+	for _, c := range cases {
+		if got := inviteeQuery(c.in); got != c.want {
+			t.Errorf("inviteeQuery(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	long := strings.Repeat("a", maxInviteeQueryRunes+10)
+	if got := inviteeQuery(long); len([]rune(got)) != maxInviteeQueryRunes {
+		t.Errorf("long query length = %d, want %d", len([]rune(got)), maxInviteeQueryRunes)
+	}
+}

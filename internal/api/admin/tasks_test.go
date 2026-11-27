@@ -57,6 +57,9 @@ type fakeTasks struct {
 
 	members         []tasks.Member
 	membersErr      error
+	people          []tasks.InviteeCandidate
+	peopleErr       error
+	peopleQuery     string
 	roleErr         error
 	removeMemberErr error
 
@@ -119,6 +122,14 @@ func (f *fakeTasks) ListMembers(_ context.Context, _ tasks.Principal, _ string) 
 		return nil, f.membersErr
 	}
 	return f.members, nil
+}
+
+func (f *fakeTasks) SearchInvitees(_ context.Context, _ tasks.Principal, _ string, query string) ([]tasks.InviteeCandidate, error) {
+	f.peopleQuery = query
+	if f.peopleErr != nil {
+		return nil, f.peopleErr
+	}
+	return f.people, nil
 }
 
 func (f *fakeTasks) SetMemberRole(_ context.Context, _ tasks.Principal, _, _, _ string) error {
@@ -550,6 +561,10 @@ func TestTaskScopeMatrix(t *testing.T) {
 			[]string{scopes.TasksManage}, http.StatusOK},
 		{"manage-only can list members", http.MethodGet, "/admin/task-projects/project-1/members", "",
 			[]string{scopes.TasksManage}, http.StatusOK},
+		{"manage-only can search invitees", http.MethodGet, "/admin/task-projects/project-1/people?q=sa", "",
+			[]string{scopes.TasksManage}, http.StatusOK},
+		{"update-only cannot search invitees", http.MethodGet, "/admin/task-projects/project-1/people?q=sa", "",
+			[]string{scopes.TasksUpdate}, http.StatusForbidden},
 		{"manage-only can read invites", http.MethodGet, "/admin/task-invites", "",
 			[]string{scopes.TasksManage}, http.StatusOK},
 		{"any scope can accept an invite", http.MethodPost, "/admin/task-invites/invite-1/accept", "",
@@ -607,5 +622,33 @@ func TestTaskRouteCount(t *testing.T) {
 	}
 	if count != TaskRouteCount {
 		t.Fatalf("mount has %d task routes, boot log says %d", count, TaskRouteCount)
+	}
+}
+
+// TestTaskPeopleWire pins the typeahead's returned shape: name + username,
+// and NOTHING else (the email is a match key, never a response field).
+func TestTaskPeopleWire(t *testing.T) {
+	fake := &fakeTasks{people: []tasks.InviteeCandidate{
+		{Username: "sarah", Name: "Sarah Lim"},
+	}}
+	router := taskScopeRouter(taskTestHandler(fake), scopes.TasksManage)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder,
+		taskRequest(http.MethodGet, "/admin/task-projects/project-1/people?q=%40sarah", "", scopes.TasksManage))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if fake.peopleQuery != "@sarah" {
+		t.Fatalf("query = %q, want the raw parameter (the service normalizes)", fake.peopleQuery)
+	}
+	var body struct {
+		People []map[string]any `json:"people"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.People) != 1 || body.People[0]["username"] != "sarah" ||
+		body.People[0]["name"] != "Sarah Lim" || len(body.People[0]) != 2 {
+		t.Fatalf("people wire drift: %s", recorder.Body.String())
 	}
 }

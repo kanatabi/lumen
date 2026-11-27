@@ -45,7 +45,7 @@ const (
 	// TaskRouteCount is the number of routes mountTasks registers. The
 	// composition root logs it so an operator can see the whole module is
 	// on; tasks_test.go walks the mount and keeps this number honest.
-	TaskRouteCount = 25
+	TaskRouteCount = 26
 )
 
 // tasksService is the module surface this package needs. It is an interface
@@ -60,6 +60,7 @@ type tasksService interface {
 	SoftDeleteProject(ctx context.Context, principal tasks.Principal, projectID string) error
 
 	ListMembers(ctx context.Context, principal tasks.Principal, projectID string) ([]tasks.Member, error)
+	SearchInvitees(ctx context.Context, principal tasks.Principal, projectID, query string) ([]tasks.InviteeCandidate, error)
 	SetMemberRole(ctx context.Context, principal tasks.Principal, projectID, targetID, role string) error
 	RemoveMember(ctx context.Context, principal tasks.Principal, projectID, targetID string) error
 
@@ -105,6 +106,7 @@ type taskProject struct {
 type taskMember struct {
 	UserID    string    `json:"userId"`
 	Username  string    `json:"username"`
+	Name      string    `json:"name"`
 	Role      string    `json:"role"`
 	InvitedBy *string   `json:"invitedBy"`
 	JoinedAt  time.Time `json:"joinedAt"`
@@ -194,8 +196,8 @@ func projectWire(project tasks.Project) taskProject {
 
 func memberWire(member tasks.Member) taskMember {
 	return taskMember{
-		UserID: member.UserID, Username: member.Username, Role: member.Role,
-		InvitedBy: member.InvitedBy, JoinedAt: member.JoinedAt,
+		UserID: member.UserID, Username: member.Username, Name: member.Name,
+		Role: member.Role, InvitedBy: member.InvitedBy, JoinedAt: member.JoinedAt,
 	}
 }
 
@@ -288,6 +290,7 @@ func (h *Handler) mountTasks(a chi.Router) {
 		manage.Post("/task-projects/{id}/complete", h.taskProjectComplete)
 		manage.Post("/task-projects/{id}/invites", h.taskInviteCreate)
 		manage.Delete("/task-projects/{id}/invites/{iid}", h.taskInviteRevoke)
+		manage.Get("/task-projects/{id}/people", h.taskPeople)
 		manage.Delete("/task-projects/{id}/members/{user}", h.taskMemberRemove)
 		manage.Post("/task-projects/{id}/members/{user}/role", h.taskMemberRole)
 	})
@@ -475,6 +478,31 @@ func (h *Handler) taskMemberList(w http.ResponseWriter, r *http.Request) {
 		out[index] = memberWire(member)
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"members": out})
+}
+
+// taskPeople is the invite typeahead (project-admin only): username/display
+// name prefixes or an exact email, answered as username+name rows. The email
+// is a match key, never a response field.
+func (h *Handler) taskPeople(w http.ResponseWriter, r *http.Request) {
+	principal, ok := h.tasksPrincipal(w, r)
+	if !ok {
+		return
+	}
+	people, err := h.tasks.SearchInvitees(r.Context(), principal,
+		chi.URLParam(r, "id"), r.URL.Query().Get("q"))
+	if err != nil {
+		h.taskFail(w, r, err)
+		return
+	}
+	type person struct {
+		Username string `json:"username"`
+		Name     string `json:"name"`
+	}
+	out := make([]person, len(people))
+	for index, candidate := range people {
+		out[index] = person{Username: candidate.Username, Name: candidate.Name}
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"people": out})
 }
 
 func (h *Handler) taskMemberRole(w http.ResponseWriter, r *http.Request) {

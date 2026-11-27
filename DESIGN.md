@@ -456,7 +456,10 @@ PUT    /admin/bao/:app/:env                → CAS write ({data, cas}); returns 
 GET    /admin/task-projects                   → { projects } — membership-scoped, the
                                              caller's role + live task/open counts
 POST   /admin/task-projects                   → 201 { project } (creator = first admin)
-GET    /admin/task-projects/{id}/members      → { members } (membership-scoped)
+GET    /admin/task-projects/{id}/members      → { members } (membership-scoped; name = display name)
+GET    /admin/task-projects/{id}/people?q=    → { people } — invite typeahead (project admin):
+                                             username/display-name prefixes or an EXACT email;
+                                             members/pending invitees/disabled excluded
 PATCH  /admin/task-projects/{id}              → { ok } (project admin)
 DELETE /admin/task-projects/{id}              → 204 — SOFT delete (deleted_at)
 POST   /admin/task-projects/{id}/complete     → { ok, completed } (completed_at; false reopens)
@@ -490,6 +493,15 @@ POST   /admin/notifications                   → 201 { sent } — the SEND door
                                              ONE shared token (LUMEN_NOTIFICATION_TOKEN), mounted
                                              only when configured; in-cluster only
 ```
+
+> **The people-label round (2026-11-29).** Every task reference stays a
+> `users.id` UUID (`assigned_to`, memberships, invites); `assigneeName` and
+> `creatorName` are read-only labels rendered from `users.display_name`, and
+> `TaskMember` gained `name`. Comments, activity and invite copy still carry
+> usernames — the deliberate boundary of this round. The invite typeahead is
+> project-admin-only and matches username prefix (ranked first), display-name
+> prefix, or an EXACT case-insensitive email (the `users_email_lower_key`
+> index); email is a predicate, never a response field.
 
 **The tasks application + notifications (2026-11-27, the app-center
 direction).** Tasks is lumen's first native application and lives on the

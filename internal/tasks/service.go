@@ -244,6 +244,39 @@ func (s *Service) ListMembers(ctx context.Context, principal Principal, projectI
 	return s.store.ListMembers(ctx, principal.ID, projectID)
 }
 
+// The invite typeahead's bounds: eight rows is a menu, not a directory; the
+// query cap is the email column's own maximum, so a full address is never
+// truncated into a miss.
+const (
+	inviteeSearchLimit   = 8
+	maxInviteeQueryRunes = 254
+)
+
+// inviteeQuery normalizes a typeahead query: trimmed, lowercased, a leading
+// "@" dropped (the UI's mention trigger), and capped at the email maximum.
+// Lowercasing is what makes the exact-email predicate index-friendly and
+// case-insensitive in one move.
+func inviteeQuery(raw string) string {
+	query := strings.ToLower(strings.TrimSpace(raw))
+	query = strings.TrimSpace(strings.TrimPrefix(query, "@"))
+	runes := []rune(query)
+	if len(runes) > maxInviteeQueryRunes {
+		query = string(runes[:maxInviteeQueryRunes])
+	}
+	return query
+}
+
+// SearchInvitees is the invite typeahead's service door: normalize here, let
+// the store own the admin check and the exclusions. An empty query answers an
+// empty list — never the estate's directory.
+func (s *Service) SearchInvitees(ctx context.Context, principal Principal, projectID, raw string) ([]InviteeCandidate, error) {
+	query := inviteeQuery(raw)
+	if query == "" {
+		return []InviteeCandidate{}, nil
+	}
+	return s.store.SearchInvitees(ctx, principal.ID, projectID, query, inviteeSearchLimit)
+}
+
 // SetMemberRole validates the role grammar, then delegates; the store's
 // last-admin guard is the invariant, not a second rule here (C2).
 func (s *Service) SetMemberRole(ctx context.Context, principal Principal, projectID, targetID, role string) error {
@@ -260,11 +293,18 @@ func (s *Service) RemoveMember(ctx context.Context, principal Principal, project
 
 // ---- invites ----
 
+// inviteUsername normalizes the invite wire's person spelling. The UI
+// advertises "@name" as the mention syntax; usernames cannot contain "@", so
+// the trigger is safe to drop here too (defensive: the portal also strips it).
+func inviteUsername(raw string) string {
+	return strings.TrimPrefix(strings.TrimSpace(raw), "@")
+}
+
 // CreateInvite resolves the wire's username to the identity id, applies the
 // 24-hour TTL, commits the invite, and only THEN notifies — best-effort, so a
 // notification failure cannot undo the invite.
 func (s *Service) CreateInvite(ctx context.Context, principal Principal, projectID, username string) (Invite, error) {
-	trimmed := strings.TrimSpace(username)
+	trimmed := inviteUsername(username)
 	if trimmed == "" {
 		return Invite{}, fmt.Errorf("%w: username is required", ErrInvalid)
 	}

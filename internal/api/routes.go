@@ -86,6 +86,7 @@ var Matrix = []MatrixRow{
 	{"GET", "/admin/task-projects", true, false},
 	{"POST", "/admin/task-projects", true, false},
 	{"GET", "/admin/task-projects/{id}/members", true, false},
+	{"GET", "/admin/task-projects/{id}/people", true, false},
 	{"PATCH", "/admin/task-projects/{id}", true, false},
 	{"DELETE", "/admin/task-projects/{id}", true, false},
 	{"POST", "/admin/task-projects/{id}/complete", true, false},
