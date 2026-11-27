@@ -32,6 +32,8 @@ var Matrix = []MatrixRow{
 	{"POST", "/admin/session", true, false},          // THE session mint — the only place tokens are born
 	{"POST", "/admin/session/verify", true, false},   // introspection door for other planes
 	{"GET", "/admin/session", true, false},           // whoami
+	{"GET", "/admin/profile", true, false},           // the self profile (name/email)
+	{"PATCH", "/admin/profile", true, false},         // self-service profile update
 	{"DELETE", "/admin/session", true, false},        // logout = token_version bump
 	{"POST", "/admin/session/password", true, false}, // guided change (428 escape)
 	// the auth-method seam (the passkey round, C1): login begin/finish

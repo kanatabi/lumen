@@ -159,8 +159,15 @@ func (h *Handler) whoami(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	prof, err := h.svc.Profile(r.Context(), p.ID)
+	if err != nil {
+		slog.Error("session.whoami.profile", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"username": p.Username, "id": p.ID, "scopes": p.Scopes, "mustChange": p.MustChange,
+		"name": prof.Name, "email": prof.Email,
 	})
 }
 

@@ -43,6 +43,7 @@ var migrationRoles = map[string]role.Planes{
 	"0013_webauthn_flags.sql": role.PlaneAdmin, // the BE/BS flags the login validator compares (2026-11-27)
 	"0014_tasks.sql":          role.PlaneAdmin, // the tasks application + its three scopes (2026-11-27)
 	"0015_notifications.sql":  role.PlaneAdmin, // the estate-generic notifications (2026-11-27)
+	"0016_profile.sql":        role.PlaneAdmin, // display name + email on the users lineage (2026-11-29)
 }
 
 // MigrationCountForRole is the subset size the CLASSIFICATION implies.

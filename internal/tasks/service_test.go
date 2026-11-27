@@ -218,7 +218,7 @@ func TestServiceInviteNotification(t *testing.T) {
 	// table accepts any text; the notification copy must not.
 	hostileName := "evil<b>"
 	if _, err := fixture.pool.Exec(ctx,
-		`INSERT INTO users (username, passhash) VALUES ($1, $2)`, hostileName, "x"); err != nil {
+		`INSERT INTO users (username, display_name, passhash) VALUES ($1, $1, $2)`, hostileName, "x"); err != nil {
 		t.Fatalf("seed hostile username: %v", err)
 	}
 	var hostileID string

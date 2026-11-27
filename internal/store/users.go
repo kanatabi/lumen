@@ -21,6 +21,10 @@ var ErrUsersExist = errors.New("users already exist")
 // ErrNoSuchUser backs 404 mapping for user administration verbs.
 var ErrNoSuchUser = errors.New("no such user")
 
+// ErrEmailTaken maps the profile email's unique index to a 409 at the
+// transport; the value itself is never logged.
+var ErrEmailTaken = errors.New("email already in use")
+
 // ErrUnknownScope backs 400 mapping for scope assignment: the scope failed
 // the catalog join (RBAC spine, 0010) — the CATALOG is the assignable
 // vocabulary, and the FK is the validator.
@@ -136,7 +140,7 @@ func (g *PG) BumpTokenVersion(ctx context.Context, username string) (int, error)
 func (g *PG) UpsertUser(ctx context.Context, username, passhash string) error {
 	return pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO users(username, passhash) VALUES ($1,$2)
+			`INSERT INTO users(username, display_name, passhash) VALUES ($1,$1,$2)
 			 ON CONFLICT (username) DO UPDATE SET passhash = EXCLUDED.passhash`,
 			username, passhash); err != nil {
 			return err
@@ -183,7 +187,7 @@ func (g *PG) InsertFirstAdmin(ctx context.Context, username, passhash string) (b
 		return false, nil // claimed: the wizard is gone forever, not "try later"
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO users(username, passhash, must_change) VALUES ($1,$2,false)`,
+		`INSERT INTO users(username, display_name, passhash, must_change) VALUES ($1,$1,$2,false)`,
 		username, passhash); err != nil {
 		return false, err
 	}
@@ -203,7 +207,7 @@ func (g *PG) InsertFirstAdmin(ctx context.Context, username, passhash string) (b
 func (g *PG) InsertUser(ctx context.Context, username, passhash string, scopes []string) error {
 	err := pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO users(username, passhash, must_change) VALUES ($1,$2,true)`,
+			`INSERT INTO users(username, display_name, passhash, must_change) VALUES ($1,$1,$2,true)`,
 			username, passhash); err != nil {
 			return err
 		}
@@ -246,6 +250,8 @@ func (g *PG) InsertUser(ctx context.Context, username, passhash string, scopes [
 type UserRow struct {
 	ID         string   `json:"id"`
 	Username   string   `json:"username"`
+	Name       string   `json:"name"`
+	Email      string   `json:"email"`
 	Scopes     []string `json:"scopes"`
 	MustChange bool     `json:"mustChange"`
 	Disabled   bool     `json:"disabled"`
@@ -254,12 +260,12 @@ type UserRow struct {
 
 func (g *PG) ListUsers(ctx context.Context) ([]UserRow, error) {
 	rows, err := g.pool.Query(ctx,
-		`SELECT u.id, u.username, u.must_change, u.disabled,
+		`SELECT u.id, u.username, u.display_name, COALESCE(u.email, ''), u.must_change, u.disabled,
 		        to_char(u.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'),
 		        COALESCE(array_agg(us.scope ORDER BY us.scope) FILTER (WHERE us.scope IS NOT NULL), '{}')
 		   FROM users u
 		   LEFT JOIN user_scopes us ON us.user_id = u.id
-		  GROUP BY u.id, u.username, u.must_change, u.disabled, u.created_at
+		  GROUP BY u.id, u.username, u.display_name, u.email, u.must_change, u.disabled, u.created_at
 		  ORDER BY u.created_at, u.username`)
 	if err != nil {
 		return nil, err
@@ -268,12 +274,58 @@ func (g *PG) ListUsers(ctx context.Context) ([]UserRow, error) {
 	out := []UserRow{}
 	for rows.Next() {
 		var u UserRow
-		if err := rows.Scan(&u.ID, &u.Username, &u.MustChange, &u.Disabled, &u.CreatedAt, &u.Scopes); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Name, &u.Email, &u.MustChange, &u.Disabled, &u.CreatedAt, &u.Scopes); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+// GetUserByID is the profile read (the self-service page and whoami's
+// name/email). One row + the scope aggregate.
+func (g *PG) GetUserByID(ctx context.Context, id string) (UserRow, error) {
+	var u UserRow
+	err := g.pool.QueryRow(ctx,
+		`SELECT u.id, u.username, u.display_name, COALESCE(u.email, ''), u.must_change, u.disabled,
+		        to_char(u.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'),
+		        COALESCE(array_agg(us.scope ORDER BY us.scope) FILTER (WHERE us.scope IS NOT NULL), '{}')
+		   FROM users u
+		   LEFT JOIN user_scopes us ON us.user_id = u.id
+		  WHERE u.id = $1
+		  GROUP BY u.id, u.username, u.display_name, u.email, u.must_change, u.disabled, u.created_at`,
+		id).
+		Scan(&u.ID, &u.Username, &u.Name, &u.Email, &u.MustChange, &u.Disabled, &u.CreatedAt, &u.Scopes)
+	if err == pgx.ErrNoRows {
+		return UserRow{}, ErrNoSuchUser
+	}
+	if err != nil {
+		return UserRow{}, err
+	}
+	return u, nil
+}
+
+// UpdateProfile writes the self-service fields (display name + email) and
+// returns the updated row. The email unique index maps to ErrEmailTaken;
+// an empty email is stored as NULL (the unique index ignores NULL).
+func (g *PG) UpdateProfile(ctx context.Context, id, name, email string) (UserRow, error) {
+	var emailArg any
+	if email != "" {
+		emailArg = email
+	}
+	tag, err := g.pool.Exec(ctx,
+		`UPDATE users SET display_name = $2, email = $3 WHERE id = $1`, id, name, emailArg)
+	if err != nil {
+		var pgErr interface{ SQLState() string }
+		if errors.As(err, &pgErr) && pgErr.SQLState() == "23505" {
+			return UserRow{}, ErrEmailTaken
+		}
+		return UserRow{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return UserRow{}, ErrNoSuchUser
+	}
+	return g.GetUserByID(ctx, id)
 }
 
 // SetScopes REPLACES a user's scope set (the admin's assignment is the

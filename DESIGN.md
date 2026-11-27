@@ -606,6 +606,15 @@ the cluster keeps taking orders only from Git.
 > the row per request; the MINT stamps the grant set (the spine ruling) and
 > every scope mutation bumps token_version, so a demotion is immediate.
 > `lumen user` CLI stays as headless recovery (bootstrap = full catalog).
+>
+> **The profile round (2026-11-29, migration 0016).** users gains
+> `display_name` (backfilled = username; 1–80 chars — the future public
+> byline once authoring lands) and optional `email` (lowercase, unique when
+> set, private account contact — never published). `GET/PATCH /admin/profile`
+> is self-service and auth-only (no scope — it is yourself); `whoami` carries
+> `name` + `email` so the portal shell renders identity without a second read,
+> and the admin-only users list gains both fields. Username remains the
+> immutable login handle. 0016 is admin-plane only (0002's rule).
 
 ## 8b. Process roles — the split (owner ruling 2026-11-13)
 

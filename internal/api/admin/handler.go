@@ -103,6 +103,8 @@ func (h *Handler) Mount(r chi.Router, planes role.Planes) {
 				auth.Use(h.localAuthenticator) // signature + live users row: this plane OWNS both
 				auth.Get("/session", h.whoami)
 				auth.Delete("/session", h.logout)
+				auth.Get("/profile", h.getProfile)
+				auth.Patch("/profile", h.updateProfile)
 				auth.Post("/session/password", h.changePassword)
 			})
 
