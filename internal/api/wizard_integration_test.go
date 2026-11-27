@@ -19,6 +19,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/kanatabi/lumen/internal/scopes"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -109,11 +111,14 @@ func TestSetupWizardE2E(t *testing.T) {
 		t.Fatalf("register: %d %v", code, res)
 	}
 	// the TOFU owner holds the FULL catalog (the spine ruling) — the
-	// register response is the first place it is visible
+	// register response is the first place it is visible. The catalog is
+	// DERIVED from the seed: a hardcoded total drifts when a feature seeds
+	// its own scope (0014's tasks trio did exactly that).
 	sc, _ := res["scopes"].([]any)
-	if len(sc) != 4 {
-		t.Fatalf("register scopes: %v", res["scopes"])
+	if len(sc) != len(scopes.Seed) {
+		t.Fatalf("register scopes: %v (want %d seeded)", res["scopes"], len(scopes.Seed))
 	}
+	assertSeedScopes(t, sc)
 	adminTok, _ := res["token"].(string)
 
 	// 3. TOFU is terminal: a second registration is Gone forever, 410
@@ -133,8 +138,10 @@ func TestSetupWizardE2E(t *testing.T) {
 	if code != 200 || res["mustChange"] != false {
 		t.Fatalf("login shape: %d %v", code, res)
 	}
-	if sc, _ := res["scopes"].([]any); len(sc) != 4 {
-		t.Fatalf("login scopes: %v", res["scopes"])
+	if sc, _ := res["scopes"].([]any); len(sc) != len(scopes.Seed) {
+		t.Fatalf("login scopes: %v (want %d seeded)", res["scopes"], len(scopes.Seed))
+	} else {
+		assertSeedScopes(t, sc)
 	}
 
 	// 5. admin creates an editor: server temp password, once, well-formed

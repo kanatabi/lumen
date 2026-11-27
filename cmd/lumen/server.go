@@ -155,7 +155,8 @@ func buildControlPlane(deps *dependencies) *admin.Handler {
 	}
 	handler := admin.New(svc)
 	notificationService := enableNotifications(deps, handler)
-	enableTasks(deps, handler, notificationService)
+	taskService := enableTasks(deps, handler, notificationService)
+	svc.EnableTasksLifecycle(taskService) // C4: a user delete promotes the next project admin
 	return handler
 }
 
@@ -199,7 +200,8 @@ func buildAllPlane(deps *dependencies) *admin.Handler {
 	// notifications and tasks routes too (the same env-only token contract).
 	handler := admin.New(adminSvc)
 	notificationService := enableNotifications(deps, handler)
-	enableTasks(deps, handler, notificationService)
+	taskService := enableTasks(deps, handler, notificationService)
+	adminSvc.EnableTasksLifecycle(taskService) // C4: a user delete promotes the next project admin
 	return handler
 }
 
@@ -226,10 +228,11 @@ func enableNotifications(deps *dependencies, handler *admin.Handler) *notificati
 // enableTasks mounts the tasks application on the admin/all planes. The cms
 // plane owns content only and never calls this; the module's notifier is the
 // notifications service the bell already uses.
-func enableTasks(deps *dependencies, handler *admin.Handler, notifier tasks.Notifier) {
+func enableTasks(deps *dependencies, handler *admin.Handler, notifier tasks.Notifier) *tasks.Service {
 	taskService := tasks.NewService(tasks.NewStore(deps.pool), notifier)
 	handler.EnableTasks(taskService)
 	log.Printf("tasks: enabled (%d routes)", admin.TaskRouteCount)
+	return taskService
 }
 
 func enableMedia(svc *adminsvc.Service, cfg config.Config) {

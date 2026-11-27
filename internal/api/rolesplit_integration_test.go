@@ -34,6 +34,7 @@ import (
 	"github.com/kanatabi/lumen/internal/api/public"
 	"github.com/kanatabi/lumen/internal/authz"
 	"github.com/kanatabi/lumen/internal/role"
+	"github.com/kanatabi/lumen/internal/scopes"
 	"github.com/kanatabi/lumen/internal/service"
 	"github.com/kanatabi/lumen/internal/store"
 	"github.com/kanatabi/lumen/internal/throttle"
@@ -93,6 +94,26 @@ func hasTable(t *testing.T, pool *pgxpool.Pool, name string) bool {
 		t.Fatal(err)
 	}
 	return n > 0
+}
+
+// assertSeedScopes proves the wire carries EXACTLY the seeded catalog —
+// derived from scopes.Seed so a new feature scope cannot stale a golden.
+func assertSeedScopes(t *testing.T, got []any) {
+	t.Helper()
+	want := make(map[string]bool, len(scopes.Seed))
+	for _, seed := range scopes.Seed {
+		want[seed.Scope] = true
+	}
+	for _, raw := range got {
+		name, ok := raw.(string)
+		if !ok || !want[name] {
+			t.Fatalf("unexpected scope %v (catalog %v)", raw, want)
+		}
+		delete(want, name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing seeded scopes %v", want)
+	}
 }
 
 func TestMigrateForRole_FreshDatabases(t *testing.T) {
@@ -222,10 +243,13 @@ func TestRoleSplit_VerifyDoorAndCMSPlane(t *testing.T) {
 		res["mustChange"] != false || len(res) != 4 {
 		t.Fatalf("verify 200 shape drift: %s", raw)
 	}
+	// the catalog is DERIVED from the seed (a hardcoded total drifts the
+	// moment a feature seeds its own scope — the 0014 tasks trio did).
 	scopesList, ok := res["scopes"].([]any)
-	if !ok || len(scopesList) != 4 {
-		t.Fatalf("verify scopes drift: %s", raw)
+	if !ok || len(scopesList) != len(scopes.Seed) {
+		t.Fatalf("verify scopes drift (want %d): %s", len(scopes.Seed), raw)
 	}
+	assertSeedScopes(t, scopesList)
 
 	// the admin plane has NO content surface (honest absence)
 	if code, _, _ := callJSON(t, adminSrv.URL+"/admin/posts", http.MethodGet, token, nil); code != http.StatusNotFound {

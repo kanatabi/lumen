@@ -52,10 +52,21 @@ type Service struct {
 	// passkey disabled — the methods endpoint omits it and the routes
 	// answer the honest 503-ish sentinel (EnableWebAuthn wires it).
 	wa *webauthn.WebAuthn
+
+	// tasksLifecycle is the optional user-delete repair (the tasks module's
+	// project-admin promotion). NIL = no module wired (tests, cms plane).
+	tasksLifecycle userLifecycle
 }
 
 func New(st *store.PG, q *queue.Client, eng *search.Service, jwtSecret string, limiter *throttle.Limiter) *Service {
 	return &Service{store: st, queue: q, engine: eng, jwtSecret: jwtSecret, limiter: limiter}
+}
+
+// EnableTasksLifecycle wires the cross-module repair run AFTER a user row is
+// deleted (owner C4): the tasks module promotes a project's next admin, or
+// soft-deletes a project with nobody left. Best-effort by contract.
+func (s *Service) EnableTasksLifecycle(lifecycle userLifecycle) {
+	s.tasksLifecycle = lifecycle
 }
 
 func (s *Service) EnableMedia(store media.Store, endpoint, bucket, cdnBase string) {

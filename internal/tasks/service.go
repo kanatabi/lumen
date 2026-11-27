@@ -426,6 +426,13 @@ func (s *Service) DeleteComment(ctx context.Context, principal Principal, taskID
 
 // ---- stats ----
 
+// OnUserDeleted is the C4 repair hook the user-delete path fires after the
+// FK cascade: promote the next admin (or soft-delete an empty project). The
+// store's scan is idempotent and correct pre- or post-delete.
+func (s *Service) OnUserDeleted(ctx context.Context, userID string) error {
+	return s.store.OnUserDeleted(ctx, userID)
+}
+
 // Stats delegates the four-card rollup, which is computed in the caller's
 // location (the handler passes the X-Client-Timezone value or UTC).
 func (s *Service) Stats(ctx context.Context, principal Principal, location *time.Location) (Stats, error) {

@@ -274,10 +274,26 @@ func (s *Service) SetUserDisabled(ctx context.Context, username string, disabled
 // DeleteUser removes the account — the store carries the TWO guards
 // (self-deletion, the last users:manage holder). The audit line names the
 // ACTOR: an account deletion is the most consequential admin verb.
+// userLifecycle is the optional cross-module hook a user delete fires AFTER
+// the row is gone (the tasks module promotes a project's next admin there).
+// It is declared here, implemented by the tasks service, and BEST-EFFORT:
+// a repair failure is a log line — the account deletion already stands.
+type userLifecycle interface {
+	OnUserDeleted(ctx context.Context, userID string) error
+}
+
 func (s *Service) DeleteUser(ctx context.Context, actor, username string) error {
-	if err := s.store.DeleteUser(ctx, actor, username); err != nil {
+	deletedID, err := s.store.DeleteUser(ctx, actor, username)
+	if err != nil {
 		return err
 	}
 	slog.Info("users.delete", "actor", actor, "user", username)
+	if s.tasksLifecycle != nil {
+		if err := s.tasksLifecycle.OnUserDeleted(ctx, deletedID); err != nil {
+			// The delete is done; an unmanageable project is the repair's
+			// job to heal later (the hook is idempotent). Never fail here.
+			slog.Warn("users.delete.tasks_repair", "user", username, "err", err)
+		}
+	}
 	return nil
 }

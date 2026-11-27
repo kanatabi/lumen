@@ -349,14 +349,17 @@ func (g *PG) SetDisabled(ctx context.Context, username string, disabled bool) (i
 	return tv, err
 }
 
-// DeleteUser removes the account (user_scopes cascade). TWO GUARDS,
+// DeleteUser removes the account (user_scopes cascade) and RETURNS the
+// deleted user's id: the caller's cross-module repair (the tasks admin
+// promotion) needs the identity after the row is gone. TWO GUARDS,
 // evaluated in ONE transaction: no self-deletion (the acting admin would
 // strand the session in their own hand), and no removal that leaves ZERO
 // users:manage holders (lumen user recovery exists, but must never be the
 // plan). Content is estate-owned — no author FKs — so the delete is just
 // the row.
-func (g *PG) DeleteUser(ctx context.Context, actor, username string) error {
-	return pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
+func (g *PG) DeleteUser(ctx context.Context, actor, username string) (string, error) {
+	var deletedID string
+	err := pgx.BeginFunc(ctx, g.pool, func(tx pgx.Tx) error {
 		if actor == username {
 			return ErrSelfDelete
 		}
@@ -390,8 +393,10 @@ func (g *PG) DeleteUser(ctx context.Context, actor, username string) error {
 		if _, err := tx.Exec(ctx, `DELETE FROM users WHERE id = $1`, targetID); err != nil {
 			return err
 		}
+		deletedID = targetID
 		return nil
 	})
+	return deletedID, err
 }
 
 // CatalogEntry is one line of the portal-managed scope catalog.
