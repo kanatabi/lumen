@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -40,6 +41,11 @@ type Handler struct {
 	// composition root enables it: a process without the module mounts no
 	// notification route at all (honest absence, like EnableBao).
 	notifications notificationsService
+
+	// tasks is the first lumen-native application (M2.B). nil on the cms
+	// plane and whenever the composition root has not enabled it — the
+	// same honest-absence rule.
+	tasks tasksService
 }
 
 // Introspector is the authz.Remote seam: one method, fakeable in the
@@ -64,6 +70,12 @@ func NewCMS(svc *adminsvc.Service, intro Introspector) *Handler {
 // when the shared token is configured — no token, no route.
 func (h *Handler) EnableNotifications(svc notificationsService) {
 	h.notifications = svc
+}
+
+// EnableTasks mounts the tasks module's routes (M2.B). The module owns all
+// business rules; the handler side adds only the scope matrix and the wire.
+func (h *Handler) EnableTasks(svc tasksService) {
+	h.tasks = svc
 }
 
 // ctxKey is package-private on purpose: the Principal only travels through
@@ -142,6 +154,17 @@ func (h *Handler) Mount(r chi.Router, planes role.Planes) {
 					a.Post("/notifications", h.notificationSend)
 				}
 			}
+
+			// the tasks application (M2.B): one module, its own scope
+			// trio, and its own route groups (tasks.go) inside the local
+			// authenticator — the admin plane owns the users family, so
+			// membership and identity are both local here.
+			if h.tasks != nil {
+				a.Group(func(taskRoutes chi.Router) {
+					taskRoutes.Use(h.localAuthenticator)
+					h.mountTasks(taskRoutes)
+				})
+			}
 		}
 		if planes.Has(role.PlaneCMS) {
 			// ---- CONTENT PLANE (lumen-staging / lumen-production) ----
@@ -188,6 +211,27 @@ func (h *Handler) requireScope(scope string) func(http.Handler) http.Handler {
 				return
 			}
 			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// requireAnyScope is the tasks workspace's front door: a caller holding ANY
+// of the listed scopes passes (reads and invite accept/decline need the
+// workspace, not one specific verb). The refusal names every acceptable
+// scope so the portal can render the requirement verbatim.
+func (h *Handler) requireAnyScope(required ...string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			p, ok := principalFrom(r.Context())
+			if ok {
+				for _, scope := range required {
+					if slices.Contains(p.Scopes, scope) {
+						next.ServeHTTP(w, r)
+						return
+					}
+				}
+			}
+			httpx.WriteErr(w, http.StatusForbidden, strings.Join(required, " or ")+" required")
 		})
 	}
 }

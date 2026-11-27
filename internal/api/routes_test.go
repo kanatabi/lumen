@@ -22,6 +22,7 @@ import (
 	"github.com/kanatabi/lumen/internal/notifications"
 	"github.com/kanatabi/lumen/internal/role"
 	"github.com/kanatabi/lumen/internal/service"
+	"github.com/kanatabi/lumen/internal/tasks"
 	"github.com/kanatabi/lumen/internal/throttle"
 )
 
@@ -50,6 +51,9 @@ func builtRoutes(t *testing.T, planes role.Planes, withBao bool) []string {
 		// plane never registers them at all — keep its handler bare.
 		t.Setenv("LUMEN_NOTIFICATION_TOKEN", "test-token")
 		adm.EnableNotifications(notifications.NewService(nil))
+		// tasks (M2.B): registration only — the empty service touches no
+		// state until a request is served, and the walk serves none.
+		adm.EnableTasks(tasks.NewService(nil, nil))
 	}
 	h := api.NewRouter(pub, adm, planes)
 	mux, ok := h.(*chi.Mux)

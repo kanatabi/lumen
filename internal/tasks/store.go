@@ -656,6 +656,19 @@ func (s *Store) RemoveMember(ctx context.Context, callerID, projectID, targetID 
 
 // ---- invites ----
 
+// UserIDByUsername resolves the invite wire's username to the identity id
+// (the users.id seam). An unknown name is ErrNotFound; the service maps it to
+// ErrInvalid because a mistyped invitee is the caller's typo, not a hidden
+// estate resource. This is the ONLY user lookup the tasks module performs
+// beyond its identity-display joins.
+func (s *Store) UserIDByUsername(ctx context.Context, username string) (string, error) {
+	var id string
+	if err := s.pool.QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, username).Scan(&id); err != nil {
+		return "", notFound(err)
+	}
+	return id, nil
+}
+
 const inviteSelect = `
 	SELECT i.id, i.project_id, p.name, i.inviter_id, inviter.username,
 	       i.invitee_id, i.expires_at, i.created_at

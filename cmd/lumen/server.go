@@ -23,6 +23,7 @@ import (
 	"github.com/kanatabi/lumen/internal/obs"
 	"github.com/kanatabi/lumen/internal/role"
 	"github.com/kanatabi/lumen/internal/service"
+	"github.com/kanatabi/lumen/internal/tasks"
 	"github.com/kanatabi/lumen/internal/throttle"
 )
 
@@ -153,7 +154,8 @@ func buildControlPlane(deps *dependencies) *admin.Handler {
 		log.Print("webauthn: not configured — the passkey method is off (honest, C1)")
 	}
 	handler := admin.New(svc)
-	enableNotifications(deps, handler)
+	notificationService := enableNotifications(deps, handler)
+	enableTasks(deps, handler, notificationService)
 	return handler
 }
 
@@ -194,9 +196,10 @@ func buildAllPlane(deps *dependencies) *admin.Handler {
 	}
 
 	// role=all serves the union the matrix declares, so dev carries the
-	// notifications routes too (the same env-only token contract).
+	// notifications and tasks routes too (the same env-only token contract).
 	handler := admin.New(adminSvc)
-	enableNotifications(deps, handler)
+	notificationService := enableNotifications(deps, handler)
+	enableTasks(deps, handler, notificationService)
 	return handler
 }
 
@@ -206,14 +209,27 @@ func buildAllPlane(deps *dependencies) *admin.Handler {
 // The token is env-only (the manual `lumen-notification-token` Secret,
 // §5.6 family): never a config binding, never a Bao value, so no ES
 // render and no epoch flip rides this in-cluster door.
-func enableNotifications(deps *dependencies, handler *admin.Handler) {
+//
+// It returns the service because the tasks module consumes the SAME
+// instance as its Notifier: one construction, one rate limiter, one token.
+func enableNotifications(deps *dependencies, handler *admin.Handler) *notifications.Service {
 	notificationService := notifications.NewService(notifications.NewStore(deps.pool))
 	handler.EnableNotifications(notificationService)
 	if notificationService.SendEnabled() {
 		log.Print("notifications: send door ON (one shared token)")
-		return
+		return notificationService
 	}
 	log.Print("notifications: send door OFF (no LUMEN_NOTIFICATION_TOKEN — honest absence)")
+	return notificationService
+}
+
+// enableTasks mounts the tasks application on the admin/all planes. The cms
+// plane owns content only and never calls this; the module's notifier is the
+// notifications service the bell already uses.
+func enableTasks(deps *dependencies, handler *admin.Handler, notifier tasks.Notifier) {
+	taskService := tasks.NewService(tasks.NewStore(deps.pool), notifier)
+	handler.EnableTasks(taskService)
+	log.Printf("tasks: enabled (%d routes)", admin.TaskRouteCount)
 }
 
 func enableMedia(svc *adminsvc.Service, cfg config.Config) {

@@ -33,6 +33,12 @@ package main
 import (
 	"fmt"
 	"os"
+	// EMBED the IANA zone database: the runtime image is alpine with only
+	// ca-certificates (no /usr/share/zoneinfo), and the tasks day/week
+	// boundaries call time.LoadLocation on the client's X-Client-Timezone.
+	// Without this import every zone would silently fall back to UTC in
+	// production while the tests (which embed it) stayed green.
+	_ "time/tzdata"
 
 	"github.com/spf13/cobra"
 )

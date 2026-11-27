@@ -77,6 +77,35 @@ var Matrix = []MatrixRow{
 	{"POST", "/admin/notifications/{id}/read", true, false},
 	{"POST", "/admin/notifications/read-all", true, false},
 	{"POST", "/admin/notifications", true, false},
+	// tasks (M2.B): the first lumen-native application. Reads need ANY of
+	// the tasks trio; creates tasks:create; task edits tasks:update;
+	// project settings/invites/members/roles tasks:manage. The project
+	// membership role is the store's second key (invisible in the matrix).
+	{"GET", "/admin/task-projects", true, false},
+	{"POST", "/admin/task-projects", true, false},
+	{"GET", "/admin/task-projects/{id}/members", true, false},
+	{"PATCH", "/admin/task-projects/{id}", true, false},
+	{"DELETE", "/admin/task-projects/{id}", true, false},
+	{"POST", "/admin/task-projects/{id}/complete", true, false},
+	{"POST", "/admin/task-projects/{id}/invites", true, false},
+	{"DELETE", "/admin/task-projects/{id}/invites/{iid}", true, false},
+	{"DELETE", "/admin/task-projects/{id}/members/{user}", true, false},
+	{"POST", "/admin/task-projects/{id}/members/{user}/role", true, false},
+	{"GET", "/admin/task-invites", true, false},
+	{"POST", "/admin/task-invites/{id}/accept", true, false},
+	{"POST", "/admin/task-invites/{id}/decline", true, false},
+	{"GET", "/admin/tasks", true, false},
+	{"POST", "/admin/tasks", true, false},
+	{"GET", "/admin/tasks/{id}", true, false},
+	{"PATCH", "/admin/tasks/{id}", true, false},
+	{"POST", "/admin/tasks/{id}/toggle", true, false},
+	{"DELETE", "/admin/tasks/{id}", true, false},
+	{"POST", "/admin/tasks/{id}/subtasks", true, false},
+	{"PATCH", "/admin/tasks/{id}/subtasks/{sid}", true, false},
+	{"DELETE", "/admin/tasks/{id}/subtasks/{sid}", true, false},
+	{"POST", "/admin/tasks/{id}/comments", true, false},
+	{"DELETE", "/admin/tasks/{id}/comments/{cid}", true, false},
+	{"GET", "/admin/task-stats", true, false},
 
 	// ---- CONTENT PLANE (cms only): the §1 reads ----
 	{"GET", "/api/posts", false, true},
