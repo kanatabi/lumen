@@ -33,12 +33,14 @@ import (
 	"github.com/kanatabi/lumen/internal/api/public"
 	"github.com/kanatabi/lumen/internal/bao"
 	"github.com/kanatabi/lumen/internal/media"
+	"github.com/kanatabi/lumen/internal/notifications"
 	"github.com/kanatabi/lumen/internal/queue"
 	"github.com/kanatabi/lumen/internal/role"
 	"github.com/kanatabi/lumen/internal/search"
 	"github.com/kanatabi/lumen/internal/service"
 	"github.com/kanatabi/lumen/internal/session"
 	"github.com/kanatabi/lumen/internal/store"
+	"github.com/kanatabi/lumen/internal/tasks"
 	"github.com/kanatabi/lumen/internal/throttle"
 )
 
@@ -88,6 +90,10 @@ func newAdminHarness(t *testing.T) *adminHarness {
 		`DELETE FROM collections WHERE name IN ('night-series','integration-%') OR name LIKE 'integration-%'`,
 		`DELETE FROM photos WHERE src LIKE 'https://integration.invalid/%'`,
 		`DELETE FROM river_job WHERE args->>'post_id' IS NOT NULL AND state = 'discarded'`,
+		// tasks (M3): the project row cascades its members/invites/tasks/
+		// subtasks/comments/activity. Projects deliberately survive a
+		// creator delete (C4), so the user purge alone would leak them.
+		`DELETE FROM task_projects WHERE name LIKE 'itest-%'`,
 	} {
 		if _, err := pool.Exec(context.Background(), stmt); err != nil {
 			t.Fatal(err)
@@ -145,7 +151,18 @@ func newAdminHarness(t *testing.T) *adminHarness {
 		adminSvc.EnableBao(baoClient)
 	}
 	build := func() http.Handler {
-		return api.NewRouter(public.New(service.New(pg, searchEngine), searchEngine), admin.New(adminSvc), role.PlanesAll)
+		// the two M2 modules, wired exactly like the composition root: the
+		// notifications service reads LUMEN_NOTIFICATION_TOKEN at
+		// construction (a test needing the SEND door sets it BEFORE
+		// newAdminHarness), tasks sends through it, and the user-delete
+		// path fires the C4 lifecycle hook.
+		handler := admin.New(adminSvc)
+		notificationService := notifications.NewService(notifications.NewStore(pool))
+		handler.EnableNotifications(notificationService)
+		taskService := tasks.NewService(tasks.NewStore(pool), notificationService)
+		handler.EnableTasks(taskService)
+		adminSvc.EnableTasksLifecycle(taskService)
+		return api.NewRouter(public.New(service.New(pg, searchEngine), searchEngine), handler, role.PlanesAll)
 	}
 	// media relay: an EMBEDDED S3-protocol server (gofakes3 + s3mem) — a
 	// real SigV4 endpoint, in-process and deterministic; no registry luck.
