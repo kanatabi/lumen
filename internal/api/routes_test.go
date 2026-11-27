@@ -19,6 +19,7 @@ import (
 	"github.com/kanatabi/lumen/internal/api/admin"
 	"github.com/kanatabi/lumen/internal/api/public"
 	"github.com/kanatabi/lumen/internal/bao"
+	"github.com/kanatabi/lumen/internal/notifications"
 	"github.com/kanatabi/lumen/internal/role"
 	"github.com/kanatabi/lumen/internal/service"
 	"github.com/kanatabi/lumen/internal/throttle"
@@ -40,7 +41,17 @@ func builtRoutes(t *testing.T, planes role.Planes, withBao bool) []string {
 		baoOn(t, svc)
 	}
 	pub := public.New(service.New(nil, nil), nil)
-	h := api.NewRouter(pub, admin.New(svc), planes)
+	adm := admin.New(svc)
+	if planes.Has(role.PlaneAdmin) {
+		// The matrix carries the notification rows on the admin plane (and
+		// therefore legacy "all"). The walk must build the CONFIGURED
+		// surface: a token makes the SEND door mount; without one the route
+		// is honestly absent (proven in the admin handler tests). The cms
+		// plane never registers them at all — keep its handler bare.
+		t.Setenv("LUMEN_NOTIFICATION_TOKEN", "test-token")
+		adm.EnableNotifications(notifications.NewService(nil))
+	}
+	h := api.NewRouter(pub, adm, planes)
 	mux, ok := h.(*chi.Mux)
 	if !ok {
 		t.Fatal("NewRouter must return *chi.Mux for the walk (single-table promise)")

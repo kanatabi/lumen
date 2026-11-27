@@ -67,6 +67,16 @@ var Matrix = []MatrixRow{
 	{"PUT", "/admin/bao/{app}/{env}", true, false},
 	{"PUT", "/admin/bao/{app}/{env}/pin", true, false},
 	{"DELETE", "/admin/bao/{app}/{env}/pin", true, false},
+	// notifications (M2.A): the bell reads are any authenticated user (no
+	// scope); the SEND door is a PUBLIC mount, token-gated by ONE shared
+	// env value, and absent entirely when that value is unset. The matrix
+	// states the CONFIGURED surface — the handler tests prove the
+	// unmounted honesty.
+	{"GET", "/admin/notifications", true, false},
+	{"GET", "/admin/notifications/unread-count", true, false},
+	{"POST", "/admin/notifications/{id}/read", true, false},
+	{"POST", "/admin/notifications/read-all", true, false},
+	{"POST", "/admin/notifications", true, false},
 
 	// ---- CONTENT PLANE (cms only): the §1 reads ----
 	{"GET", "/api/posts", false, true},

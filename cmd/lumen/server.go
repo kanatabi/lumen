@@ -19,6 +19,7 @@ import (
 	"github.com/kanatabi/lumen/internal/bao"
 	"github.com/kanatabi/lumen/internal/config"
 	"github.com/kanatabi/lumen/internal/media"
+	"github.com/kanatabi/lumen/internal/notifications"
 	"github.com/kanatabi/lumen/internal/obs"
 	"github.com/kanatabi/lumen/internal/role"
 	"github.com/kanatabi/lumen/internal/service"
@@ -151,7 +152,9 @@ func buildControlPlane(deps *dependencies) *admin.Handler {
 	} else {
 		log.Print("webauthn: not configured — the passkey method is off (honest, C1)")
 	}
-	return admin.New(svc)
+	handler := admin.New(svc)
+	enableNotifications(deps, handler)
+	return handler
 }
 
 // buildContentPlane wires lumen-staging/production: the desks with the
@@ -190,7 +193,27 @@ func buildAllPlane(deps *dependencies) *admin.Handler {
 		log.Print("secrets plane: not configured — /admin/bao absent (honest, §9)")
 	}
 
-	return admin.New(adminSvc)
+	// role=all serves the union the matrix declares, so dev carries the
+	// notifications routes too (the same env-only token contract).
+	handler := admin.New(adminSvc)
+	enableNotifications(deps, handler)
+	return handler
+}
+
+// enableNotifications mounts the estate-generic notifications module on
+// the admin plane's handler: the read/mark routes for every authenticated
+// user, and the SEND door when — and only when — the shared token exists.
+// The token is env-only (the manual `lumen-notification-token` Secret,
+// §5.6 family): never a config binding, never a Bao value, so no ES
+// render and no epoch flip rides this in-cluster door.
+func enableNotifications(deps *dependencies, handler *admin.Handler) {
+	notificationService := notifications.NewService(notifications.NewStore(deps.pool))
+	handler.EnableNotifications(notificationService)
+	if notificationService.SendEnabled() {
+		log.Print("notifications: send door ON (one shared token)")
+		return
+	}
+	log.Print("notifications: send door OFF (no LUMEN_NOTIFICATION_TOKEN — honest absence)")
 }
 
 func enableMedia(svc *adminsvc.Service, cfg config.Config) {

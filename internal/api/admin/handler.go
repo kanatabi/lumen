@@ -35,6 +35,11 @@ type Handler struct {
 	// LOCAL bearer verification — the admin plane owns the mint and the
 	// users rows, and the legacy "all" dev plane keeps today's behavior.
 	intro Introspector
+
+	// notifications is the estate-generic module (M2.A). nil until the
+	// composition root enables it: a process without the module mounts no
+	// notification route at all (honest absence, like EnableBao).
+	notifications notificationsService
 }
 
 // Introspector is the authz.Remote seam: one method, fakeable in the
@@ -51,6 +56,14 @@ func New(svc *adminsvc.Service) *Handler { return &Handler{svc: svc} }
 // closed — internal/authz documents the exact staleness bound).
 func NewCMS(svc *adminsvc.Service, intro Introspector) *Handler {
 	return &Handler{svc: svc, intro: intro}
+}
+
+// EnableNotifications mounts the notifications module's routes (the
+// composition-root opt-in, mirroring EnableBao on adminsvc). The read
+// routes are any authenticated user; the SEND door is registered only
+// when the shared token is configured — no token, no route.
+func (h *Handler) EnableNotifications(svc notificationsService) {
+	h.notifications = svc
 }
 
 // ctxKey is package-private on purpose: the Principal only travels through
@@ -110,6 +123,24 @@ func (h *Handler) Mount(r chi.Router, planes role.Planes) {
 					bao.Use(h.localAuthenticator, h.requireScope(scopes.SecretsAdmin))
 					h.mountSecrets(bao) // the §9 relay is a control-plane surface
 				})
+			}
+
+			// the notifications module (M2.A): the bell/panel routes are
+			// ANY authenticated user (no scope — every account owns its
+			// inbox), while the SEND door is a PUBLIC mount gated by ONE
+			// shared token and registered ONLY when that token exists.
+			// Unset = the path does not exist on this router at all.
+			if h.notifications != nil {
+				a.Group(func(inbox chi.Router) {
+					inbox.Use(h.localAuthenticator)
+					inbox.Get("/notifications", h.notificationList)
+					inbox.Get("/notifications/unread-count", h.notificationUnreadCount)
+					inbox.Post("/notifications/{id}/read", h.notificationMarkRead)
+					inbox.Post("/notifications/read-all", h.notificationMarkAllRead)
+				})
+				if h.notifications.SendEnabled() {
+					a.Post("/notifications", h.notificationSend)
+				}
 			}
 		}
 		if planes.Has(role.PlaneCMS) {
