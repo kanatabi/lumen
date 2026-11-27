@@ -453,7 +453,74 @@ PUT    /admin/bao/:app/:env                → CAS write ({data, cas}); returns 
                                              the ENTIRE surface (§9: thin, explicit —
                                              no proxying sys/, nothing else added at
                                              any time)
+GET    /admin/task-projects                   → { projects } — membership-scoped, the
+                                             caller's role + live task/open counts
+POST   /admin/task-projects                   → 201 { project } (creator = first admin)
+GET    /admin/task-projects/{id}/members      → { members } (membership-scoped)
+PATCH  /admin/task-projects/{id}              → { ok } (project admin)
+DELETE /admin/task-projects/{id}              → 204 — SOFT delete (deleted_at)
+POST   /admin/task-projects/{id}/complete     → { ok, completed } (completed_at; false reopens)
+POST   /admin/task-projects/{id}/invites      → 201 { invite } (username resolved; 24h TTL)
+DELETE /admin/task-projects/{id}/invites/{iid}→ 204
+DELETE /admin/task-projects/{id}/members/{user} → 204 (last admin = 409; unassigns their tasks)
+POST   /admin/task-projects/{id}/members/{user}/role → { ok } (last admin = 409)
+GET    /admin/task-invites                    → { invites } — the caller's pending inbox
+POST   /admin/task-invites/{id}/accept        → { invite } (410 expired — the row is consumed)
+POST   /admin/task-invites/{id}/decline       → 204
+GET    /admin/tasks?view=today|upcoming|all&project= → { projects, tasks, stats } — the
+                                             grouped workspace (My day = due today + open overdue)
+POST   /admin/tasks                           → 201 { task } (assignee MUST be a member)
+GET    /admin/tasks/{id}                      → { task, subtasks, comments, activity } (one snapshot)
+PATCH  /admin/tasks/{id}                      → { task } — three-way presence: absent leaves,
+                                             null clears (dueAt/assignedTo), a value sets
+POST   /admin/tasks/{id}/toggle               → { task } (done/done_at atomically)
+DELETE /admin/tasks/{id}                      → 204 — SOFT delete
+POST   /admin/tasks/{id}/subtasks             → 201 { subtask }
+PATCH  /admin/tasks/{id}/subtasks/{sid}       → { subtask }
+DELETE /admin/tasks/{id}/subtasks/{sid}       → 204
+POST   /admin/tasks/{id}/comments             → 201 { comment } (+ the activity row)
+DELETE /admin/tasks/{id}/comments/{cid}       → 204 (author or project admin)
+GET    /admin/task-stats                      → { stats } — open/dueToday/completedWeek/overdue
+                                             in the client's X-Client-Timezone (UTC fallback)
+GET    /admin/notifications?unread=&before=&limit= → { items, nextBefore } (TTL-filtered)
+GET    /admin/notifications/unread-count      → { count }
+POST   /admin/notifications/{id}/read         → 204 (foreign/expired/unknown = 404)
+POST   /admin/notifications/read-all          → { updated }
+POST   /admin/notifications                   → 201 { sent } — the SEND door: app-to-app,
+                                             ONE shared token (LUMEN_NOTIFICATION_TOKEN), mounted
+                                             only when configured; in-cluster only
 ```
+
+**The tasks application + notifications (2026-11-27, the app-center
+direction).** Tasks is lumen's first native application and lives on the
+admin plane: `internal/tasks` is a SELF-CONTAINED module whose only seams
+are `users.id` FKs, the authz principal, and the scope gate (a future
+split lifts the package + the schema + those seams). The trio
+`tasks:create|update|manage` opens the workspace (reads and invite
+acceptance need ANY of them); project MEMBERSHIP and role (admin|member)
+are the room key, enforced inside every query — an id from the wire is
+never evidence of access, and a non-member sees the one 404 denial voice.
+Projects and tasks carry `deleted_at` (soft delete; no destructive verbs)
+and projects carry `completed_at`; ordering columns do not exist by
+decision (the portal sorts client-side). Day/week boundaries use the
+client's `X-Client-Timezone` (IANA; UTC fallback; the admin image embeds
+the zone database). A project may hold MANY admins; the last one cannot
+leave (409), and deleting a user promotes the earliest remaining member —
+or soft-deletes a memberless project — through a best-effort lifecycle
+hook fired after the user row is gone.
+
+**Notifications are estate-generic (2026-11-27).** One row per user: a
+plain-text title, a SANITIZED inline-HTML body (sanitized on write, and
+again by the portal on render), a JSONB payload whose `url`, when
+present, MUST be a same-origin path, and `expires_at` as the TTL. No
+purge job yet — every read filters `expires_at > now()` and the admin
+plane runs no worker (a janitor will be in-process or a CronJob). Reads
+and mark-read are any authenticated user; the SEND door is PUBLIC but
+gated by ONE shared token read from the environment (the manual
+`lumen-notification-token` Secret, §5.6 family — NOT a config binding,
+unmounted when unset), rate-limited, and audited without titles, bodies,
+or tokens. In-process callers (tasks) use the Notifier seam and never
+the HTTP door.
 
 Rules:
 - **Login throttle** (public-console era): per-IP + per-account exponential backoff on
