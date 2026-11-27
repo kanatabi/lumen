@@ -51,8 +51,12 @@ pin-as-lock). Code is the source of truth; this file is the index.
   `LUMEN_ROLE=all` (dev convenience). Vault can never silently re-role a
   fleet — the role stays inline on the pods, never a Bao value.
 - Real config/secret values live in OpenBao; Git keeps schemas/templates only.
-  The admin identity's ES carries only `LUMEN_DB_URL` +
-  `LUMEN_SESSION_JWT_SECRET`; the signing key has exactly ONE home.
+  The admin identity's ES binds four properties from `kv/lumen/shared`
+  (`LUMEN_DB_URL`, `LUMEN_SESSION_JWT_SECRET`, `LUMEN_WEBAUTHN_RP_ID`, and
+  `LUMEN_WEBAUTHN_ORIGINS` ← property `LUMEN_WEBAUTHN_ORIGIN`); the signing key
+  has exactly ONE home. `LUMEN_NOTIFICATION_TOKEN` is the deliberate exception:
+  env-only, from the hand-made `lumen-notification-token` k8s Secret — no kv
+  binding, no epoch flip.
 
 ## Conventions (code has landed — these are rulings, not proposals)
 
