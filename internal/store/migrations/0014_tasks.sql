@@ -29,7 +29,7 @@ ON CONFLICT (scope) DO NOTHING;
 CREATE TABLE task_projects (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 	-- the creator may be deleted; the project survives (C4)
-	creator_id UUID, -- users.id (no cross-DB FK: tasks owns its own DB)
+	creator_id UUID REFERENCES users(id) ON DELETE SET NULL,
 	name TEXT NOT NULL,
 	completed_at TIMESTAMPTZ,          -- the "completed" flag
 	deleted_at   TIMESTAMPTZ,          -- the "deleted" flag: SOFT, reads filter
@@ -41,9 +41,9 @@ CREATE INDEX task_projects_live_idx ON task_projects(created_at)
 
 CREATE TABLE task_project_members (
 	project_id UUID NOT NULL REFERENCES task_projects(id) ON DELETE CASCADE,
-	user_id UUID NOT NULL, -- users.id (identity resolved via the admin directory)
+	user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin','member')),
-	invited_by UUID, -- users.id
+	invited_by UUID REFERENCES users(id) ON DELETE SET NULL,
 	joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 	PRIMARY KEY (project_id, user_id)
 );
@@ -55,9 +55,9 @@ CREATE INDEX task_project_members_user_idx ON task_project_members(user_id);
 CREATE TABLE task_project_invites (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 	project_id UUID NOT NULL REFERENCES task_projects(id) ON DELETE CASCADE,
-	inviter_id UUID NOT NULL, -- users.id
+	inviter_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	-- resolved from the username at the door; the FK is the identity seam
-	invitee_id UUID NOT NULL, -- users.id
+	invitee_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	expires_at TIMESTAMPTZ NOT NULL,   -- 24h, computed in code
 	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -70,8 +70,8 @@ CREATE INDEX task_project_invites_invitee_idx
 CREATE TABLE task_tasks (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 	project_id UUID NOT NULL REFERENCES task_projects(id) ON DELETE CASCADE,
-	created_by UUID, -- users.id
-	assigned_to UUID, -- users.id; v1: ONE assignee
+	created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+	assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,  -- v1: ONE assignee
 	title TEXT NOT NULL,
 	notes TEXT NOT NULL DEFAULT '',
 	priority TEXT NOT NULL DEFAULT 'none'
@@ -104,7 +104,7 @@ CREATE INDEX task_subtasks_task_idx ON task_subtasks(task_id);
 CREATE TABLE task_comments (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 	task_id UUID NOT NULL REFERENCES task_tasks(id) ON DELETE CASCADE,
-	author_id UUID, -- users.id; history survives
+	author_id UUID REFERENCES users(id) ON DELETE SET NULL,  -- history survives
 	body TEXT NOT NULL,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -113,7 +113,7 @@ CREATE INDEX task_comments_task_idx ON task_comments(task_id);
 CREATE TABLE task_activity (
 	id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 	task_id UUID NOT NULL REFERENCES task_tasks(id) ON DELETE CASCADE,
-	actor_id UUID, -- users.id
+	actor_id UUID REFERENCES users(id) ON DELETE SET NULL,
 	verb TEXT NOT NULL,          -- created|updated|assigned|completed|reopened|commented|deleted
 	detail TEXT NOT NULL DEFAULT '',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT now()

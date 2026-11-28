@@ -37,6 +37,7 @@ import (
 	"github.com/kanatabi/lumen/internal/scopes"
 	"github.com/kanatabi/lumen/internal/service"
 	"github.com/kanatabi/lumen/internal/store"
+	"github.com/kanatabi/lumen/internal/tasks"
 	"github.com/kanatabi/lumen/internal/throttle"
 )
 
@@ -137,11 +138,18 @@ func TestMigrateForRole_FreshDatabases(t *testing.T) {
 				t.Fatalf("cms database missing %s", want)
 			}
 		}
-		// the tasks + notifications families are ADMIN data (0014/0015)
-		for _, forbidden := range []string{"task_projects", "task_tasks", "notifications"} {
-			if hasTable(t, pool, forbidden) {
-				t.Fatalf("cms database grew the admin table %s", forbidden)
+		// tasks moved to the cms plane (2026-11-29): its tables ride this DB
+		// via 0018; notifications stay admin-owned (0015).
+		for _, want := range []string{
+			"task_projects", "task_project_members", "task_project_invites",
+			"task_tasks", "task_subtasks", "task_comments", "task_activity",
+		} {
+			if !hasTable(t, pool, want) {
+				t.Fatalf("cms database missing the tasks table %s (0018_tasks_cms.sql)", want)
 			}
+		}
+		if hasTable(t, pool, "notifications") {
+			t.Fatal("cms database grew the admin-owned notifications table")
 		}
 	})
 
@@ -172,6 +180,77 @@ func TestMigrateForRole_FreshDatabases(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestCMSTaskSchemaRepairsDeletedAccounts proves the REAL cms schema has no
+// users FKs and that the lazy C4 repair still works: a deleted account's
+// membership/invites/assignments are cleaned and a successor admin is
+// promoted, with no database cascade to help.
+func TestCMSTaskSchemaRepairsDeletedAccounts(t *testing.T) {
+	base := integrationDB(t)
+	ctx := context.Background()
+	pool := freshSchema(t, base, "cmsrepair")
+	if _, err := store.MigrateForRole(ctx, pool, role.CMS); err != nil {
+		t.Fatal(err)
+	}
+	if hasTable(t, pool, "users") {
+		t.Fatal("cms schema must not own a users table")
+	}
+
+	const (
+		projectID = "11111111-1111-1111-1111-111111111111"
+		missingID = "22222222-2222-2222-2222-222222222222"
+		memberID  = "33333333-3333-3333-3333-333333333333"
+		taskID    = "44444444-4444-4444-4444-444444444444"
+	)
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO task_projects (id, creator_id, name) VALUES ($1, $2, 'Repair')`,
+		projectID, missingID); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO task_project_members (project_id, user_id, role)
+		 VALUES ($1, $2, 'admin'), ($1, $3, 'member')`,
+		projectID, missingID, memberID); err != nil {
+		t.Fatalf("seed members: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO task_tasks (id, project_id, created_by, assigned_to, title)
+		 VALUES ($1, $2, $3, $3, 'Fix')`,
+		taskID, projectID, missingID); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	if err := tasks.NewStore(pool).RepairMissingUsers(ctx, []string{missingID}); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+
+	var members int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM task_project_members WHERE user_id = $1`, missingID).Scan(&members); err != nil {
+		t.Fatal(err)
+	}
+	if members != 0 {
+		t.Fatal("deleted member survived the repair")
+	}
+	var role string
+	if err := pool.QueryRow(ctx,
+		`SELECT role FROM task_project_members WHERE user_id = $1`, memberID).Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	if role != "admin" {
+		t.Fatalf("successor role = %q, want admin", role)
+	}
+	var assigned, creator *string
+	if err := pool.QueryRow(ctx,
+		`SELECT assigned_to::text, creator_id::text FROM task_tasks t
+		  JOIN task_projects p ON p.id = t.project_id WHERE t.id = $1`, taskID).
+		Scan(&assigned, &creator); err != nil {
+		t.Fatal(err)
+	}
+	if assigned != nil || creator != nil {
+		t.Fatalf("deleted account refs survived: assigned=%v creator=%v", assigned, creator)
+	}
 }
 
 func callJSON(t *testing.T, url, method, bearer string, body any) (int, map[string]any, string) {

@@ -20,12 +20,11 @@ var migrationsFS embed.FS
 // 2026-11-13): every migration file mapped to the planes that apply it.
 // The rule is OWNERSHIP, not vocabulary: users/session lineage → admin
 // ONLY; posts/media/tags/collections → cms ONLY; the queue's river tables
-// ride cms (decided by the caller — the admin plane runs no queue). Tasks
-// moved to cms on 2026-11-29 (the app-plane ruling: admin is control +
-// identity, never an app surface); the admin DB's old task tables are
-// orphaned by the ledger, never dropped by this runner. A
-// file missing from this table is an ERROR, never a silent skip: "map
-// every file" is enforced by the runner itself, tested by
+// ride cms (decided by the caller — the admin plane runs no queue). The
+// tasks app moved to cms on 2026-11-29; 0014 stays the FROZEN admin-era
+// schema (never edited), and 0018 is the cms DB's initial bootstrap with
+// no users FKs. A file missing from this table is an ERROR, never a silent
+// skip: "map every file" is enforced by the runner itself, tested by
 // migrate_manifest_test against the embedded FS.
 //
 // 0003_admin.sql is named from the M3 era — it ALTERS posts/photos, so it
@@ -44,10 +43,11 @@ var migrationRoles = map[string]role.Planes{
 	"0011_user_lifecycle.sql":   role.PlaneAdmin, // the user-lifecycle verbs: the disabled flag (2026-11-24)
 	"0012_webauthn.sql":         role.PlaneAdmin, // the passkey credentials (the auth-method seam, 2026-11-25)
 	"0013_webauthn_flags.sql":   role.PlaneAdmin, // the BE/BS flags the login validator compares (2026-11-27)
-	"0014_tasks.sql":            role.PlaneAdmin, // the tasks application + its three scopes (2026-11-27)
+	"0014_tasks.sql":            role.PlaneAdmin, // FROZEN legacy admin copy — applied in lumen_admin, never edited
 	"0015_notifications.sql":    role.PlaneAdmin, // the estate-generic notifications (2026-11-27)
 	"0016_profile.sql":          role.PlaneAdmin, // display name + email on the users lineage (2026-11-29)
 	"0017_notification_env.sql": role.PlaneAdmin, // task notifications scoped to their console env (2026-11-29)
+	"0018_tasks_cms.sql":        role.PlaneCMS,   // the tasks app's CMS bootstrap — same tables, no users FKs (2026-11-29)
 }
 
 // MigrationCountForRole is the subset size the CLASSIFICATION implies.

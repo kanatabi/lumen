@@ -102,3 +102,49 @@ func TestUsersBlockLeftCore(t *testing.T) {
 		t.Fatal("0001_core lost its content tables")
 	}
 }
+
+// TestTaskMigrationBoundary pins the exact ownership of the tasks schema —
+// by ROLE, not by a derived count. Counts cannot catch a mis-mapped file
+// (the map is their source); this test can. The 2026-11-29 incident: 0014
+// stayed admin while the cms code expected its tables, so the staging
+// migrate job reported "7 files" and created nothing.
+func TestTaskMigrationBoundary(t *testing.T) {
+	adminOnly := []string{
+		"0014_tasks.sql", "0015_notifications.sql",
+		"0016_profile.sql", "0017_notification_env.sql",
+	}
+	for _, name := range adminOnly {
+		planes, ok := migrationRoles[name]
+		if !ok {
+			t.Fatalf("%s is UNCLASSIFIED", name)
+		}
+		if !planes.Has(role.PlaneAdmin) || planes.Has(role.PlaneCMS) {
+			t.Fatalf("%s MUST be admin-only, got %v", name, planes)
+		}
+	}
+	cms := migrationRoles["0018_tasks_cms.sql"]
+	if !cms.Has(role.PlaneCMS) || cms.Has(role.PlaneAdmin) {
+		t.Fatalf("0018_tasks_cms.sql MUST be cms-only, got %v", cms)
+	}
+
+	// 0014 is the FROZEN admin-era schema: it must still carry its users FKs
+	// (editing an applied migration is a doctrine violation).
+	legacy, err := migrationsFS.ReadFile("migrations/0014_tasks.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sqlCode(string(legacy)), "REFERENCES users(id)") {
+		t.Fatal("0014_tasks.sql lost its original users FKs — an applied migration was edited")
+	}
+	// The cms bootstrap must have NO users FKs, and no users/scope writes.
+	cmsBody, err := migrationsFS.ReadFile("migrations/0018_tasks_cms.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sqlCode(string(cmsBody)), "REFERENCES users") {
+		t.Fatal("0018_tasks_cms.sql carries a cross-plane users FK")
+	}
+	if strings.Contains(sqlCode(string(cmsBody)), "INTO scopes") {
+		t.Fatal("0018_tasks_cms.sql writes the admin-owned scopes catalog")
+	}
+}

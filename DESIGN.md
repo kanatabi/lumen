@@ -512,7 +512,8 @@ from `lumen-staging`/`lumen-production` (`role=cms`) and its tables live in
 that env's DB — the admin plane is control + identity only. `internal/tasks`
 is a SELF-CONTAINED module whose seams are the authz principal, the scope
 gate, and an `identity.Directory` (the admin's token-gated internal door):
-the task DB has **no `users` table and no users FKs**, so display names and
+the task DB has **no `users` table and no users FKs** (`0018_tasks_cms.sql`
+is the cms bootstrap; `0014` stays the frozen admin-era file), so display names and
 invite searches are hydrated through that seam, and a deleted account is
 healed lazily on the next hydration (memberships/invites removed, refs
 nulled, adminless projects repaired) — the admin can no longer call this
