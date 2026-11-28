@@ -610,7 +610,9 @@ func (s *Service) AcceptInvite(ctx context.Context, principal Principal, inviteI
 		return Invite{}, err
 	}
 	if len(invites) == 0 {
-		return Invite{}, ErrNotFound
+		// The accept already committed; a vanished inviter only costs the
+		// display label, not the membership. Return the row unhydrated.
+		return invite, nil
 	}
 	return invites[0], nil
 }
