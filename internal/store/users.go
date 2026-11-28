@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -326,6 +327,92 @@ func (g *PG) UpdateProfile(ctx context.Context, id, name, email string) (UserRow
 		return UserRow{}, ErrNoSuchUser
 	}
 	return g.GetUserByID(ctx, id)
+}
+
+// PersonRow is the identity projection app planes may see: id + immutable
+// username + display name. Email is never selected here.
+type PersonRow struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Name     string `json:"name"`
+}
+
+// PeopleByIDs batch-hydrates the identity projection. Deleted ids are simply
+// absent — the app plane uses that absence to self-heal orphaned references.
+func (g *PG) PeopleByIDs(ctx context.Context, ids []string) ([]PersonRow, error) {
+	if len(ids) == 0 {
+		return []PersonRow{}, nil
+	}
+	rows, err := g.pool.Query(ctx,
+		`SELECT id, username, display_name FROM users WHERE id = ANY($1::uuid[])`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PersonRow{}
+	for rows.Next() {
+		var person PersonRow
+		if err := rows.Scan(&person.ID, &person.Username, &person.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, person)
+	}
+	return out, rows.Err()
+}
+
+// SearchPeople is the invite typeahead's identity half: username prefix
+// (ranked first), display-name prefix, or an EXACT case-insensitive email.
+// Disabled accounts are not suggested. The email is a predicate only — it is
+// never selected, so it cannot leak through this door.
+func (g *PG) SearchPeople(ctx context.Context, query string, limit int) ([]PersonRow, error) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	query = strings.TrimSpace(strings.TrimPrefix(query, "@"))
+	if query == "" {
+		return []PersonRow{}, nil
+	}
+	if limit <= 0 {
+		limit = 8
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	rows, err := g.pool.Query(ctx, `
+		SELECT id, username, display_name
+		  FROM users
+		 WHERE NOT disabled
+		   AND (starts_with(lower(username), $1)
+		        OR starts_with(lower(display_name), $1)
+		        OR email = $1)
+		 ORDER BY (username = $1) DESC,
+		          starts_with(lower(username), $1) DESC,
+		          username
+		 LIMIT $2`, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PersonRow{}
+	for rows.Next() {
+		var person PersonRow
+		if err := rows.Scan(&person.ID, &person.Username, &person.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, person)
+	}
+	return out, rows.Err()
+}
+
+// UserIDByUsername resolves the invite wire's immutable handle to the
+// identity id. Disabled accounts still resolve (the invite door decides
+// whether to admit them); a missing row is ErrNoSuchUser.
+func (g *PG) UserIDByUsername(ctx context.Context, username string) (string, error) {
+	var id string
+	err := g.pool.QueryRow(ctx,
+		`SELECT id FROM users WHERE username = $1`, username).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNoSuchUser
+	}
+	return id, err
 }
 
 // SetScopes REPLACES a user's scope set (the admin's assignment is the

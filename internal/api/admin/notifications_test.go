@@ -96,7 +96,7 @@ func (f *fakeNotifications) List(_ context.Context, userID string, opts notifica
 	return f.listItems, nil
 }
 
-func (f *fakeNotifications) UnreadCount(_ context.Context, userID string) (int, error) {
+func (f *fakeNotifications) UnreadCount(_ context.Context, userID, env string) (int, error) {
 	f.unreadUser = userID
 	if f.unreadErr != nil {
 		return 0, f.unreadErr
@@ -110,7 +110,7 @@ func (f *fakeNotifications) MarkRead(_ context.Context, userID, id string) error
 	return f.markReadErr
 }
 
-func (f *fakeNotifications) MarkAllRead(_ context.Context, userID string) (int, error) {
+func (f *fakeNotifications) MarkAllRead(_ context.Context, userID, env string) (int, error) {
 	f.markAllUser = userID
 	if f.markAllErr != nil {
 		return 0, f.markAllErr

@@ -51,9 +51,9 @@ type notificationsService interface {
 	Send(ctx context.Context, batch []notifications.SendParams) (int, error)
 	UserIDsForUsernames(ctx context.Context, names []string) ([]string, error)
 	List(ctx context.Context, userID string, opts notifications.ListOpts) ([]notifications.Notification, error)
-	UnreadCount(ctx context.Context, userID string) (int, error)
+	UnreadCount(ctx context.Context, userID, env string) (int, error)
 	MarkRead(ctx context.Context, userID, id string) error
-	MarkAllRead(ctx context.Context, userID string) (int, error)
+	MarkAllRead(ctx context.Context, userID, env string) (int, error)
 }
 
 // notificationItem is the panel's row shape (§2.6). Payload stays raw so
@@ -117,6 +117,7 @@ func (h *Handler) notificationList(w http.ResponseWriter, r *http.Request) {
 		UnreadOnly: unreadOnly,
 		Before:     before,
 		Limit:      limit,
+		Env:        query.Get("env"),
 	})
 	if err != nil {
 		h.notificationFail(w, r, err)
@@ -161,7 +162,7 @@ func (h *Handler) notificationUnreadCount(w http.ResponseWriter, r *http.Request
 		httpx.WriteErr(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	count, err := h.notifications.UnreadCount(r.Context(), principal.ID)
+	count, err := h.notifications.UnreadCount(r.Context(), principal.ID, r.URL.Query().Get("env"))
 	if err != nil {
 		h.notificationFail(w, r, err)
 		return
@@ -194,7 +195,7 @@ func (h *Handler) notificationMarkAllRead(w http.ResponseWriter, r *http.Request
 		httpx.WriteErr(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	updated, err := h.notifications.MarkAllRead(r.Context(), principal.ID)
+	updated, err := h.notifications.MarkAllRead(r.Context(), principal.ID, r.URL.Query().Get("env"))
 	if err != nil {
 		h.notificationFail(w, r, err)
 		return
@@ -218,6 +219,8 @@ func (h *Handler) notificationSend(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		App       string          `json:"app"`
 		To        []string        `json:"to"`
+		ToIDs     []string        `json:"toIds"`
+		Env       string          `json:"env"`
 		Type      string          `json:"type"`
 		Title     string          `json:"title"`
 		Body      string          `json:"body"`
@@ -240,9 +243,23 @@ func (h *Handler) notificationSend(w http.ResponseWriter, r *http.Request) {
 		expiresAt = &utc
 	}
 
-	userIDs, err := h.notifications.UserIDsForUsernames(r.Context(), in.To)
-	if err != nil {
-		h.notificationFail(w, r, err)
+	// Two recipient spellings: the external door speaks usernames; an
+	// in-cluster app plane already holds users.id and sends `toIds`. One
+	// request uses exactly one spelling.
+	userIDs := in.ToIDs
+	if len(userIDs) == 0 {
+		resolved, err := h.notifications.UserIDsForUsernames(r.Context(), in.To)
+		if err != nil {
+			h.notificationFail(w, r, err)
+			return
+		}
+		userIDs = resolved
+	} else if len(in.To) > 0 {
+		httpx.WriteErr(w, http.StatusBadRequest, "send either to or toIds, not both")
+		return
+	}
+	if len(userIDs) == 0 || len(userIDs) > notificationPageMax {
+		httpx.WriteErr(w, http.StatusBadRequest, "to or toIds must name 1..100 recipients")
 		return
 	}
 
@@ -250,6 +267,7 @@ func (h *Handler) notificationSend(w http.ResponseWriter, r *http.Request) {
 	for _, userID := range userIDs {
 		batch = append(batch, notifications.SendParams{
 			UserID:    userID,
+			Env:       in.Env,
 			App:       in.App,
 			Type:      in.Type,
 			Title:     in.Title,

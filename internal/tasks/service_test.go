@@ -58,7 +58,7 @@ func principalFor(id, username string) Principal {
 // ErrInvalid BEFORE the store is touched — the nil store is the witness.
 func TestServiceValidationRules(t *testing.T) {
 	ctx := context.Background()
-	service := NewService(nil, nil) // any store access would panic; none is allowed
+	service := NewService(nil, nil, nil) // any store access would panic; none is allowed
 	principal := Principal{ID: "user-1", Username: "alice"}
 
 	tooLongTitle := strings.Repeat("t", maxTaskTitleRunes+1)
@@ -160,7 +160,7 @@ func TestServiceInviteNotification(t *testing.T) {
 	fixture := newFixture(t)
 	ctx := context.Background()
 	notifier := &fakeNotifier{}
-	service := NewService(fixture.store, notifier)
+	service := NewService(fixture.store, fixture.directory, notifier)
 	alice := principalFor(fixture.alice, "alice")
 
 	project, err := service.CreateProject(ctx, alice, "Home & <b>")
@@ -247,7 +247,7 @@ func TestServiceInviteNotificationBestEffort(t *testing.T) {
 	fixture := newFixture(t)
 	ctx := context.Background()
 	notifier := &fakeNotifier{err: errors.New("notification store unavailable")}
-	service := NewService(fixture.store, notifier)
+	service := NewService(fixture.store, fixture.directory, notifier)
 	alice := principalFor(fixture.alice, "alice")
 
 	project, err := service.CreateProject(ctx, alice, "Home")
@@ -278,7 +278,7 @@ func TestServiceAssignmentNotifications(t *testing.T) {
 	fixture := newFixture(t)
 	ctx := context.Background()
 	notifier := &fakeNotifier{}
-	service := NewService(fixture.store, notifier)
+	service := NewService(fixture.store, fixture.directory, notifier)
 	alice := principalFor(fixture.alice, "alice")
 	bob := principalFor(fixture.bob, "bob")
 
@@ -402,7 +402,7 @@ func TestServiceAssignmentNotifications(t *testing.T) {
 func TestServiceInviteFlow(t *testing.T) {
 	fixture := newFixture(t)
 	ctx := context.Background()
-	service := NewService(fixture.store, &fakeNotifier{})
+	service := NewService(fixture.store, fixture.directory, &fakeNotifier{})
 	alice := principalFor(fixture.alice, "alice")
 	bob := principalFor(fixture.bob, "bob")
 	carol := principalFor(fixture.carol, "carol")
@@ -474,7 +474,7 @@ func TestServiceInviteFlow(t *testing.T) {
 func TestServiceStatsInJakarta(t *testing.T) {
 	fixture := newFixture(t)
 	ctx := context.Background()
-	service := NewService(fixture.store, &fakeNotifier{})
+	service := NewService(fixture.store, fixture.directory, &fakeNotifier{})
 	alice := principalFor(fixture.alice, "alice")
 
 	location, err := time.LoadLocation("Asia/Jakarta")

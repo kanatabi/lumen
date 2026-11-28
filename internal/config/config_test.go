@@ -39,6 +39,7 @@ func TestDefaultsAndEnv(t *testing.T) {
 func TestServerRoleRequiresSessionSecret(t *testing.T) {
 	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
 	t.Setenv("LUMEN_SESSION_JWT_SECRET", "")
+	t.Setenv("LUMEN_IDENTITY_TOKEN", "itest-identity")
 	t.Setenv("LUMEN_CONFIG", "")
 	c, err := Load()
 	if err != nil {
@@ -159,6 +160,8 @@ func TestCMSPlaneDoesNotReadSessionSecret(t *testing.T) {
 	// struct — the ruling removed it from cms BINDINGS, not just usage
 	t.Setenv("LUMEN_SESSION_JWT_SECRET", "leaked-but-ignored")
 	t.Setenv("LUMEN_ADMIN_URL", "http://lumen-admin:8080")
+	t.Setenv("LUMEN_ENV", "staging")
+	t.Setenv("LUMEN_IDENTITY_TOKEN", "itest-identity")
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -185,6 +188,7 @@ func TestAdminPlaneDoesNotReadMediaOrMeili(t *testing.T) {
 	t.Setenv("LUMEN_DB_URL", "postgres://env/db")
 	t.Setenv("LUMEN_CONFIG", "")
 	t.Setenv("LUMEN_SESSION_JWT_SECRET", "s")
+	t.Setenv("LUMEN_IDENTITY_TOKEN", "itest-identity")
 	t.Setenv("LUMEN_MEILI_URL", "http://localhost:7700")
 	t.Setenv("LUMEN_MEDIA_BUCKET", "lumen-media")
 	c, err := Load()

@@ -20,7 +20,10 @@ var migrationsFS embed.FS
 // 2026-11-13): every migration file mapped to the planes that apply it.
 // The rule is OWNERSHIP, not vocabulary: users/session lineage → admin
 // ONLY; posts/media/tags/collections → cms ONLY; the queue's river tables
-// ride cms (decided by the caller — the admin plane runs no queue). A
+// ride cms (decided by the caller — the admin plane runs no queue). Tasks
+// moved to cms on 2026-11-29 (the app-plane ruling: admin is control +
+// identity, never an app surface); the admin DB's old task tables are
+// orphaned by the ledger, never dropped by this runner. A
 // file missing from this table is an ERROR, never a silent skip: "map
 // every file" is enforced by the runner itself, tested by
 // migrate_manifest_test against the embedded FS.
@@ -28,22 +31,23 @@ var migrationsFS embed.FS
 // 0003_admin.sql is named from the M3 era — it ALTERS posts/photos, so it
 // classifies cms; the name is history, the table is truth.
 var migrationRoles = map[string]role.Planes{
-	"0001_core.sql":           role.PlaneCMS, // content tables; users block MOVED to 0002
-	"0002_admin_users.sql":    role.PlaneAdmin,
-	"0003_admin.sql":          role.PlaneCMS, // historical name — posts/photos soft-delete
-	"0004_media.sql":          role.PlaneCMS,
-	"0005_tag_featured.sql":   role.PlaneCMS,
-	"0006_tag_timestamps.sql": role.PlaneCMS,
-	"0007_users_roles.sql":    role.PlaneAdmin, // layers role/must_change onto 0002's table
-	"0008_tag_posts_drop.sql": role.PlaneCMS,   // the counter column dies — counts derive from the search facet (design amendment 2026-11-15)
-	"0009_photo_exif.sql":     role.PlaneCMS,   // the upload-time EXIF capture (jsonb; Round B 2026-11-22)
-	"0010_rbac_scopes.sql":    role.PlaneAdmin, // the RBAC spine: users.id surrogate key, the scope catalog + grants, role column dropped (2026-11-24)
-	"0011_user_lifecycle.sql": role.PlaneAdmin, // the user-lifecycle verbs: the disabled flag (2026-11-24)
-	"0012_webauthn.sql":       role.PlaneAdmin, // the passkey credentials (the auth-method seam, 2026-11-25)
-	"0013_webauthn_flags.sql": role.PlaneAdmin, // the BE/BS flags the login validator compares (2026-11-27)
-	"0014_tasks.sql":          role.PlaneAdmin, // the tasks application + its three scopes (2026-11-27)
-	"0015_notifications.sql":  role.PlaneAdmin, // the estate-generic notifications (2026-11-27)
-	"0016_profile.sql":        role.PlaneAdmin, // display name + email on the users lineage (2026-11-29)
+	"0001_core.sql":             role.PlaneCMS, // content tables; users block MOVED to 0002
+	"0002_admin_users.sql":      role.PlaneAdmin,
+	"0003_admin.sql":            role.PlaneCMS, // historical name — posts/photos soft-delete
+	"0004_media.sql":            role.PlaneCMS,
+	"0005_tag_featured.sql":     role.PlaneCMS,
+	"0006_tag_timestamps.sql":   role.PlaneCMS,
+	"0007_users_roles.sql":      role.PlaneAdmin, // layers role/must_change onto 0002's table
+	"0008_tag_posts_drop.sql":   role.PlaneCMS,   // the counter column dies — counts derive from the search facet (design amendment 2026-11-15)
+	"0009_photo_exif.sql":       role.PlaneCMS,   // the upload-time EXIF capture (jsonb; Round B 2026-11-22)
+	"0010_rbac_scopes.sql":      role.PlaneAdmin, // the RBAC spine: users.id surrogate key, the scope catalog + grants, role column dropped (2026-11-24)
+	"0011_user_lifecycle.sql":   role.PlaneAdmin, // the user-lifecycle verbs: the disabled flag (2026-11-24)
+	"0012_webauthn.sql":         role.PlaneAdmin, // the passkey credentials (the auth-method seam, 2026-11-25)
+	"0013_webauthn_flags.sql":   role.PlaneAdmin, // the BE/BS flags the login validator compares (2026-11-27)
+	"0014_tasks.sql":            role.PlaneAdmin, // the tasks application + its three scopes (2026-11-27)
+	"0015_notifications.sql":    role.PlaneAdmin, // the estate-generic notifications (2026-11-27)
+	"0016_profile.sql":          role.PlaneAdmin, // display name + email on the users lineage (2026-11-29)
+	"0017_notification_env.sql": role.PlaneAdmin, // task notifications scoped to their console env (2026-11-29)
 }
 
 // MigrationCountForRole is the subset size the CLASSIFICATION implies.

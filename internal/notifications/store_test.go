@@ -318,7 +318,7 @@ func TestUnreadOnly(t *testing.T) {
 		}
 	}
 
-	count, err := setup.notifications.UnreadCount(ctx, setup.userID)
+	count, err := setup.notifications.UnreadCount(ctx, setup.userID, "")
 	if err != nil {
 		t.Fatalf("unread count: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestMarkReadIdempotenceAndDenials(t *testing.T) {
 	}
 
 	// the foreign row is still unread for its owner
-	count, err := setup.notifications.UnreadCount(ctx, setup.otherID)
+	count, err := setup.notifications.UnreadCount(ctx, setup.otherID, "")
 	if err != nil {
 		t.Fatalf("other unread count: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestExpiredRowsAreInvisible(t *testing.T) {
 		t.Fatalf("explicit expiry round-trip = %s, want ~%s", items[0].ExpiresAt, future)
 	}
 
-	count, err := setup.notifications.UnreadCount(ctx, setup.userID)
+	count, err := setup.notifications.UnreadCount(ctx, setup.userID, "")
 	if err != nil {
 		t.Fatalf("unread count: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestExpiredRowsAreInvisible(t *testing.T) {
 		t.Fatal("an expired row was marked read")
 	}
 
-	touched, err := setup.notifications.MarkAllRead(ctx, setup.userID)
+	touched, err := setup.notifications.MarkAllRead(ctx, setup.userID, "")
 	if err != nil {
 		t.Fatalf("mark all read: %v", err)
 	}
@@ -450,7 +450,7 @@ func TestExpiredRowsAreInvisible(t *testing.T) {
 		t.Fatal("mark all read missed the live row")
 	}
 
-	count, err = setup.notifications.UnreadCount(ctx, setup.userID)
+	count, err = setup.notifications.UnreadCount(ctx, setup.userID, "")
 	if err != nil {
 		t.Fatalf("unread count after mark all: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestExpiredRowsAreInvisible(t *testing.T) {
 		t.Fatalf("unread count after mark all = %d, want 0", count)
 	}
 
-	touched, err = setup.notifications.MarkAllRead(ctx, setup.userID)
+	touched, err = setup.notifications.MarkAllRead(ctx, setup.userID, "")
 	if err != nil {
 		t.Fatalf("second mark all read: %v", err)
 	}

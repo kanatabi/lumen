@@ -80,6 +80,10 @@ const (
 // character.
 var slugPattern = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,31}$`)
 
+// envPattern is the deployment-tenant grammar (LUMEN_ENV): one lowercase
+// word, no dots — an env is a console, not an event slug.
+var envPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
 // sameOriginPathPattern is the one URL rule, shared by payload values and
 // sanitized anchors: a leading slash, and a second character that is
 // neither another slash (protocol-relative `//evil`) nor a backslash or
@@ -208,8 +212,8 @@ func (s *Service) List(ctx context.Context, userID string, opts ListOpts) ([]Not
 }
 
 // UnreadCount delegates the bell's count.
-func (s *Service) UnreadCount(ctx context.Context, userID string) (int, error) {
-	return s.store.UnreadCount(ctx, userID)
+func (s *Service) UnreadCount(ctx context.Context, userID, env string) (int, error) {
+	return s.store.UnreadCount(ctx, userID, env)
 }
 
 // MarkRead delegates the one-row mark (ErrNotFound covers foreign,
@@ -219,8 +223,8 @@ func (s *Service) MarkRead(ctx context.Context, userID, id string) error {
 }
 
 // MarkAllRead delegates the bulk mark and returns the rows touched.
-func (s *Service) MarkAllRead(ctx context.Context, userID string) (int, error) {
-	return s.store.MarkAllRead(ctx, userID)
+func (s *Service) MarkAllRead(ctx context.Context, userID, env string) (int, error) {
+	return s.store.MarkAllRead(ctx, userID, env)
 }
 
 // validateBatch applies every rule and returns a normalized copy: the
@@ -239,6 +243,9 @@ func validateBatch(batch []SendParams) ([]SendParams, error) {
 	for index, params := range batch {
 		if params.UserID == "" {
 			return nil, fmt.Errorf("%w: recipient user id is required", ErrInvalid)
+		}
+		if params.Env != "" && !envPattern.MatchString(params.Env) {
+			return nil, fmt.Errorf("%w: env must match %s", ErrInvalid, envPattern)
 		}
 		if !slugPattern.MatchString(params.App) {
 			return nil, fmt.Errorf("%w: app must match %s", ErrInvalid, slugPattern)

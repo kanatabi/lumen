@@ -12,6 +12,8 @@ LUMEN_MEDIA_CREATE_BUCKET ?= true
 # compose creds below it; prod values live in Bao lumen/{env} (§9, and
 # config fail-fasts on an empty one)
 LUMEN_SESSION_JWT_SECRET ?= dev-session-secret-32-bytes-local!
+# dev identity door (app planes -> users lineage); a throwaway like the rest
+LUMEN_IDENTITY_TOKEN ?= dev-identity-token
 # dev admin account for the Postman collection / manual testing
 DEV_USER ?= gofar
 DEV_PASSWORD ?= mellon-dev-password
@@ -20,6 +22,7 @@ DEV_PASSWORD ?= mellon-dev-password
 -include dev-plane.env
 export LUMEN_DB_URL
 export LUMEN_SESSION_JWT_SECRET
+export LUMEN_IDENTITY_TOKEN
 export LUMEN_BAO_ADDR LUMEN_BAO_ROLE_ID LUMEN_BAO_SECRET_ID
 export LUMEN_MEILI_URL
 export LUMEN_MEILI_KEY

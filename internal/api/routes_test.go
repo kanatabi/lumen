@@ -43,17 +43,19 @@ func builtRoutes(t *testing.T, planes role.Planes, withBao bool) []string {
 	}
 	pub := public.New(service.New(nil, nil), nil)
 	adm := admin.New(svc)
+	// The identity door is admin-only; enabling it unconditionally keeps the
+	// matrix honest (the mount itself is inside the admin plane).
+	adm.EnableIdentity("test-identity-token")
+	// tasks (M2.B) serve on the cms plane; registration only — the empty
+	// service touches no state until a request is served.
+	adm.EnableTasks(tasks.NewService(nil, nil, nil))
 	if planes.Has(role.PlaneAdmin) {
 		// The matrix carries the notification rows on the admin plane (and
 		// therefore legacy "all"). The walk must build the CONFIGURED
 		// surface: a token makes the SEND door mount; without one the route
-		// is honestly absent (proven in the admin handler tests). The cms
-		// plane never registers them at all — keep its handler bare.
+		// is honestly absent (proven in the admin handler tests).
 		t.Setenv("LUMEN_NOTIFICATION_TOKEN", "test-token")
 		adm.EnableNotifications(notifications.NewService(nil))
-		// tasks (M2.B): registration only — the empty service touches no
-		// state until a request is served, and the walk serves none.
-		adm.EnableTasks(tasks.NewService(nil, nil))
 	}
 	h := api.NewRouter(pub, adm, planes)
 	mux, ok := h.(*chi.Mux)

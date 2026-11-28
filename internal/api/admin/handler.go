@@ -42,10 +42,15 @@ type Handler struct {
 	// notification route at all (honest absence, like EnableBao).
 	notifications notificationsService
 
-	// tasks is the first lumen-native application (M2.B). nil on the cms
-	// plane and whenever the composition root has not enabled it — the
-	// same honest-absence rule.
+	// tasks is the first lumen-native application (M2.B). It mounts on the
+	// cms plane (staging/production), where its tables live; the admin
+	// plane never enables it (2026-11-29 app-plane ruling).
 	tasks tasksService
+
+	// identityToken enables the internal identity door the app planes use
+	// to resolve usernames/display names (and exact-email invite searches).
+	// Empty = the door does not exist on this router.
+	identityToken string
 }
 
 // Introspector is the authz.Remote seam: one method, fakeable in the
@@ -63,6 +68,11 @@ func New(svc *adminsvc.Service) *Handler { return &Handler{svc: svc} }
 func NewCMS(svc *adminsvc.Service, intro Introspector) *Handler {
 	return &Handler{svc: svc, intro: intro}
 }
+
+// EnableIdentity mounts the token-gated internal identity door. The app
+// planes (cms) resolve people through it; the admin plane owns the users
+// lineage and never exposes email through the response.
+func (h *Handler) EnableIdentity(token string) { h.identityToken = token }
 
 // EnableNotifications mounts the notifications module's routes (the
 // composition-root opt-in, mirroring EnableBao on adminsvc). The read
@@ -157,25 +167,39 @@ func (h *Handler) Mount(r chi.Router, planes role.Planes) {
 				}
 			}
 
-			// the tasks application (M2.B): one module, its own scope
-			// trio, and its own route groups (tasks.go) inside the local
-			// authenticator — the admin plane owns the users family, so
-			// membership and identity are both local here.
-			if h.tasks != nil {
-				a.Group(func(taskRoutes chi.Router) {
-					taskRoutes.Use(h.localAuthenticator)
-					h.mountTasks(taskRoutes)
+			// the internal identity door (2026-11-29): token-gated, in-cluster,
+			// read-only. The app planes (cms) hydrate names and resolve invitees
+			// here; email is a match key and never a response field.
+			if h.identityToken != "" {
+				a.Route("/identity", func(id chi.Router) {
+					id.Use(h.requireIdentityToken)
+					id.Get("/people", h.identityPeople)
+					id.Post("/users", h.identityUsers)
+					id.Get("/by-username/{username}", h.identityByUsername)
 				})
 			}
 		}
 		if planes.Has(role.PlaneCMS) {
-			// ---- CONTENT PLANE (lumen-staging / lumen-production) ----
+			// ---- CONTENT + APP PLANE (lumen-staging / lumen-production) ----
+			// The authenticator only proves WHO the caller is; each surface
+			// declares its own scope below. The tasks app lives here (its
+			// tables are in this env's DB) and never demands content:manage.
 			a.Group(func(desk chi.Router) {
 				desk.Use(h.deskAuthenticator) // introspection here; local only in legacy "all"
-				h.mountPosts(desk)
-				h.mountPhotos(desk)
-				h.mountVocab(desk)
-				h.mountSearch(desk)
+				desk.Group(func(content chi.Router) {
+					content.Use(h.requireScope(scopes.ContentManage))
+					h.mountPosts(content)
+					h.mountPhotos(content)
+					h.mountVocab(content)
+					h.mountSearch(content)
+				})
+				if h.tasks != nil {
+					desk.Group(func(taskRoutes chi.Router) {
+						taskRoutes.Use(h.requireAnyScope(
+							scopes.TasksCreate, scopes.TasksUpdate, scopes.TasksManage))
+						h.mountTasks(taskRoutes)
+					})
+				}
 			})
 		}
 	})
@@ -238,18 +262,19 @@ func (h *Handler) requireAnyScope(required ...string) func(http.Handler) http.Ha
 	}
 }
 
-// deskAuthenticator guards the cms plane's content routes. In a real cms
-// deployment (intro wired) the bearer is INTROSPECTED against the admin
-// plane — fail closed: an unreachable admin answers 503, a dead token
+// deskAuthenticator guards the cms plane's surfaces. It authenticates only
+// (must-change, token validity); each surface's scope (content:manage, the
+// tasks trio) is applied by its group. In a real cms deployment the bearer is
+// INTROSPECTED against the admin plane — fail closed: an unreachable admin answers 503, a dead token
 // answers 401, and the cache's 30 s staleness bound is the documented
 // revocation-propagation window (internal/authz). In the legacy "all"
 // dev plane (no intro) the desk shares the local gate — dev behavior is
 // unchanged, which is the point of the "all" default.
 func (h *Handler) deskAuthenticator(next http.Handler) http.Handler {
 	if h.intro == nil {
-		// legacy "all": the desk gate rides the local authenticator, then
-		// the same content:manage requirement
-		return h.localAuthenticator(h.requireScope(scopes.ContentManage)(next))
+		// legacy "all": the desk gate rides the local authenticator; the
+		// per-surface scope is applied by the caller's group.
+		return h.localAuthenticator(next)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := h.intro.Verify(r.Context(), r.Header.Get("Authorization"))
@@ -263,12 +288,6 @@ func (h *Handler) deskAuthenticator(next http.Handler) http.Handler {
 				return
 			}
 			p := adminsvc.Principal{Username: id.Username, ID: id.ID, Scopes: id.Scopes, MustChange: id.MustChange}
-			// the desks ARE the content:manage surface — every desk request
-			// requires it, on both the intro and the legacy local paths
-			if !slices.Contains(p.Scopes, scopes.ContentManage) {
-				httpx.WriteErr(w, http.StatusForbidden, scopes.ContentManage+" required")
-				return
-			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, p)))
 		case errors.Is(err, authz.ErrInvalid):
 			httpx.WriteErr(w, http.StatusUnauthorized, "unauthorized")

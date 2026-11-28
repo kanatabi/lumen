@@ -32,6 +32,7 @@ import (
 	"github.com/kanatabi/lumen/internal/api/admin"
 	"github.com/kanatabi/lumen/internal/api/public"
 	"github.com/kanatabi/lumen/internal/bao"
+	"github.com/kanatabi/lumen/internal/identity"
 	"github.com/kanatabi/lumen/internal/media"
 	"github.com/kanatabi/lumen/internal/notifications"
 	"github.com/kanatabi/lumen/internal/queue"
@@ -157,9 +158,10 @@ func newAdminHarness(t *testing.T) *adminHarness {
 		// newAdminHarness), tasks sends through it, and the user-delete
 		// path fires the C4 lifecycle hook.
 		handler := admin.New(adminSvc)
+		handler.EnableIdentity("itest-identity")
 		notificationService := notifications.NewService(notifications.NewStore(pool))
 		handler.EnableNotifications(notificationService)
-		taskService := tasks.NewService(tasks.NewStore(pool), notificationService)
+		taskService := tasks.NewService(tasks.NewStore(pool), identity.NewLocal(pg), notificationService)
 		handler.EnableTasks(taskService)
 		adminSvc.EnableTasksLifecycle(taskService)
 		return api.NewRouter(public.New(service.New(pg, searchEngine), searchEngine), handler, role.PlanesAll)

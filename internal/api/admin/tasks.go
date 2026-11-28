@@ -32,6 +32,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/kanatabi/lumen/internal/httpx"
+	"github.com/kanatabi/lumen/internal/identity"
 	"github.com/kanatabi/lumen/internal/scopes"
 	"github.com/kanatabi/lumen/internal/tasks"
 )
@@ -333,6 +334,8 @@ func (h *Handler) taskFail(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.WriteErr(w, http.StatusGone, "this invite expired — ask to be re-invited")
 	case errors.Is(err, tasks.ErrForbidden):
 		httpx.WriteErr(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, identity.ErrUnavailable):
+		httpx.WriteErr(w, http.StatusServiceUnavailable, "identity directory unavailable")
 	default:
 		httpx.Fail(w, r, err)
 	}

@@ -453,6 +453,7 @@ PUT    /admin/bao/:app/:env                → CAS write ({data, cas}); returns 
                                              the ENTIRE surface (§9: thin, explicit —
                                              no proxying sys/, nothing else added at
                                              any time)
+# tasks: cms plane (staging/production DB), admin=false in the matrix
 GET    /admin/task-projects                   → { projects } — membership-scoped, the
                                              caller's role + live task/open counts
 POST   /admin/task-projects                   → 201 { project } (creator = first admin)
@@ -491,7 +492,9 @@ POST   /admin/notifications/{id}/read         → 204 (foreign/expired/unknown =
 POST   /admin/notifications/read-all          → { updated }
 POST   /admin/notifications                   → 201 { sent } — the SEND door: app-to-app,
                                              ONE shared token (LUMEN_NOTIFICATION_TOKEN), mounted
-                                             only when configured; in-cluster only
+                                             only when configured; in-cluster only. Accepts `to`
+                                             (usernames) or `toIds` (the cms tasks app) and an
+                                             optional `env`
 ```
 
 > **The people-label round (2026-11-29).** Every task reference stays a
@@ -503,11 +506,17 @@ POST   /admin/notifications                   → 201 { sent } — the SEND door
 > prefix, or an EXACT case-insensitive email (the `users_email_lower_key`
 > index); email is a predicate, never a response field.
 
-**The tasks application + notifications (2026-11-27, the app-center
-direction).** Tasks is lumen's first native application and lives on the
-admin plane: `internal/tasks` is a SELF-CONTAINED module whose only seams
-are `users.id` FKs, the authz principal, and the scope gate (a future
-split lifts the package + the schema + those seams). The trio
+**The tasks application + notifications (2026-11-27; re-homed on the cms
+plane 2026-11-29).** Tasks is lumen's first native application. It serves
+from `lumen-staging`/`lumen-production` (`role=cms`) and its tables live in
+that env's DB — the admin plane is control + identity only. `internal/tasks`
+is a SELF-CONTAINED module whose seams are the authz principal, the scope
+gate, and an `identity.Directory` (the admin's token-gated internal door):
+the task DB has **no `users` table and no users FKs**, so display names and
+invite searches are hydrated through that seam, and a deleted account is
+healed lazily on the next hydration (memberships/invites removed, refs
+nulled, adminless projects repaired) — the admin can no longer call this
+process synchronously. The trio
 `tasks:create|update|manage` opens the workspace (reads and invite
 acceptance need ANY of them); project MEMBERSHIP and role (admin|member)
 are the room key, enforced inside every query — an id from the wire is
@@ -518,8 +527,8 @@ decision (the portal sorts client-side). Day/week boundaries use the
 client's `X-Client-Timezone` (IANA; UTC fallback; the admin image embeds
 the zone database). A project may hold MANY admins; the last one cannot
 leave (409), and deleting a user promotes the earliest remaining member —
-or soft-deletes a memberless project — through a best-effort lifecycle
-hook fired after the user row is gone.
+or soft-deletes a memberless project — through the lazy repair above (the
+legacy `role=all` dev plane keeps the in-process hook).
 
 **Notifications are estate-generic (2026-11-27).** One row per user: a
 plain-text title, a SANITIZED inline-HTML body (sanitized on write, and

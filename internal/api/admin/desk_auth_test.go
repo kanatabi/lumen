@@ -47,6 +47,9 @@ func deskRouter(t *testing.T, intro *fakeIntro, captured *adminsvc.Principal) ht
 	r.Route("/admin", func(a chi.Router) {
 		a.Group(func(desk chi.Router) {
 			desk.Use(h.deskAuthenticator)
+			// the REAL content group applies its own scope after auth (the
+			// tasks group applies the tasks trio instead)
+			desk.Use(h.requireScope(scopes.ContentManage))
 			desk.HandleFunc("/posts", func(w http.ResponseWriter, req *http.Request) {
 				if p, ok := principalFrom(req.Context()); ok {
 					*captured = p

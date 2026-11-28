@@ -18,6 +18,7 @@ import (
 	"github.com/kanatabi/lumen/internal/authz"
 	"github.com/kanatabi/lumen/internal/bao"
 	"github.com/kanatabi/lumen/internal/config"
+	"github.com/kanatabi/lumen/internal/identity"
 	"github.com/kanatabi/lumen/internal/media"
 	"github.com/kanatabi/lumen/internal/notifications"
 	"github.com/kanatabi/lumen/internal/obs"
@@ -154,9 +155,10 @@ func buildControlPlane(deps *dependencies) *admin.Handler {
 		log.Print("webauthn: not configured — the passkey method is off (honest, C1)")
 	}
 	handler := admin.New(svc)
-	notificationService := enableNotifications(deps, handler)
-	taskService := enableTasks(deps, handler, notificationService)
-	svc.EnableTasksLifecycle(taskService) // C4: a user delete promotes the next project admin
+	enableNotifications(deps, handler)
+	// The identity door is the app planes' only window into the users
+	// lineage; the admin plane serves it and nothing else task-shaped.
+	handler.EnableIdentity(cfg.IdentityToken)
 	return handler
 }
 
@@ -172,7 +174,15 @@ func buildContentPlane(deps *dependencies) *admin.Handler {
 	enableMedia(svc, cfg)
 	intro := authz.NewRemote(cfg.AdminURL)
 	log.Printf("authz: bearer introspection against %s (cache 30s, fail closed)", cfg.AdminURL)
-	return admin.NewCMS(svc, intro)
+	handler := admin.NewCMS(svc, intro)
+	var notifier tasks.Notifier
+	if cfg.NotificationToken != "" {
+		notifier = notifications.NewRemoteNotifier(cfg.AdminURL, cfg.NotificationToken, cfg.Env)
+	} else {
+		log.Print("tasks: notifications OFF (no LUMEN_NOTIFICATION_TOKEN — the mutations still commit)")
+	}
+	enableTasks(deps, handler, identity.NewRemote(cfg.AdminURL, cfg.IdentityToken), notifier)
+	return handler
 }
 
 // buildAllPlane is the legacy dev wiring — both planes in one process,
@@ -200,8 +210,9 @@ func buildAllPlane(deps *dependencies) *admin.Handler {
 	// notifications and tasks routes too (the same env-only token contract).
 	handler := admin.New(adminSvc)
 	notificationService := enableNotifications(deps, handler)
-	taskService := enableTasks(deps, handler, notificationService)
-	adminSvc.EnableTasksLifecycle(taskService) // C4: a user delete promotes the next project admin
+	handler.EnableIdentity(cfg.IdentityToken)
+	taskService := enableTasks(deps, handler, identity.NewLocal(deps.store), notificationService)
+	adminSvc.EnableTasksLifecycle(taskService) // dev-only: the in-process C4 hook
 	return handler
 }
 
@@ -228,10 +239,10 @@ func enableNotifications(deps *dependencies, handler *admin.Handler) *notificati
 // enableTasks mounts the tasks application on the admin/all planes. The cms
 // plane owns content only and never calls this; the module's notifier is the
 // notifications service the bell already uses.
-func enableTasks(deps *dependencies, handler *admin.Handler, notifier tasks.Notifier) *tasks.Service {
-	taskService := tasks.NewService(tasks.NewStore(deps.pool), notifier)
+func enableTasks(deps *dependencies, handler *admin.Handler, directory identity.Directory, notifier tasks.Notifier) *tasks.Service {
+	taskService := tasks.NewService(tasks.NewStore(deps.pool), directory, notifier)
 	handler.EnableTasks(taskService)
-	log.Printf("tasks: enabled (%d routes)", admin.TaskRouteCount)
+	log.Printf("tasks: enabled on the cms plane (%d routes)", admin.TaskRouteCount)
 	return taskService
 }
 

@@ -68,6 +68,7 @@ const (
 type Notification struct {
 	ID        string
 	UserID    string
+	Env       string // "" = estate-global (the shared/system case)
 	App       string
 	Type      string
 	Title     string
@@ -82,6 +83,7 @@ type Notification struct {
 // A nil ExpiresAt means now()+30 days; a nil/empty Payload means `{}`.
 type SendParams struct {
 	UserID    string
+	Env       string // "" = global; tasks sets its console env
 	App       string
 	Type      string
 	Title     string
@@ -97,9 +99,10 @@ type ListOpts struct {
 	UnreadOnly bool
 	Before     time.Time
 	Limit      int
+	Env        string // "" = all environments (global + every scoped row)
 }
 
-const notificationColumns = `id, user_id, app, type, title, body, payload,
+const notificationColumns = `id, user_id, COALESCE(env, ''), app, type, title, body, payload,
 	read_at, expires_at, created_at`
 
 // Send persists one row per recipient in ONE transaction: a batch that
@@ -127,9 +130,9 @@ func (s *Store) Send(ctx context.Context, batch []SendParams) (int, error) {
 				expiresAt = params.ExpiresAt.UTC()
 			}
 			if _, err := tx.Exec(ctx,
-				`INSERT INTO notifications (user_id, app, type, title, body, payload, expires_at)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-				params.UserID, params.App, params.Type, params.Title, params.Body,
+				`INSERT INTO notifications (user_id, env, app, type, title, body, payload, expires_at)
+				 VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7, $8)`,
+				params.UserID, params.Env, params.App, params.Type, params.Title, params.Body,
 				payload, expiresAt); err != nil {
 				return fmt.Errorf("notification %d for user %s: %w", index, params.UserID, err)
 			}
@@ -169,9 +172,12 @@ func (s *Store) List(ctx context.Context, userID string, opts ListOpts) ([]Notif
 	if opts.UnreadOnly {
 		query += ` AND read_at IS NULL`
 	}
+	// The env predicate is ALWAYS present with the same arity: an empty
+	// value means "every environment" (the dev/default surface).
+	query += ` AND ($4 = '' OR env IS NULL OR env = $4)`
 	query += ` AND created_at < $2 ORDER BY created_at DESC LIMIT $3`
 
-	rows, err := s.pool.Query(ctx, query, userID, before, limit)
+	rows, err := s.pool.Query(ctx, query, userID, before, limit, opts.Env)
 	if err != nil {
 		return nil, err
 	}
@@ -191,11 +197,12 @@ func (s *Store) List(ctx context.Context, userID string, opts ListOpts) ([]Notif
 // UnreadCount counts exactly the rows List would show: this user,
 // unexpired, unread. The bell must never advertise a notification the
 // panel cannot open (an expired row is gone, not pending).
-func (s *Store) UnreadCount(ctx context.Context, userID string) (int, error) {
+func (s *Store) UnreadCount(ctx context.Context, userID, env string) (int, error) {
 	var count int
 	err := s.pool.QueryRow(ctx,
 		`SELECT count(*) FROM notifications
-		  WHERE user_id = $1 AND read_at IS NULL AND expires_at > now()`, userID).Scan(&count)
+		  WHERE user_id = $1 AND read_at IS NULL AND expires_at > now()
+		    AND ($2 = '' OR env IS NULL OR env = $2)`, userID, env).Scan(&count)
 	return count, err
 }
 
@@ -233,11 +240,12 @@ func (s *Store) MarkRead(ctx context.Context, userID, id string) error {
 // rows and expired rows stay untouched (and an expired row keeps
 // read_at NULL — the future janitor deletes it, it was never read). A
 // second call is naturally 0.
-func (s *Store) MarkAllRead(ctx context.Context, userID string) (int, error) {
+func (s *Store) MarkAllRead(ctx context.Context, userID, env string) (int, error) {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE notifications
 		    SET read_at = now()
-		  WHERE user_id = $1 AND read_at IS NULL AND expires_at > now()`, userID)
+		  WHERE user_id = $1 AND read_at IS NULL AND expires_at > now()
+		    AND ($2 = '' OR env IS NULL OR env = $2)`, userID, env)
 	if err != nil {
 		return 0, err
 	}
@@ -250,7 +258,7 @@ func scanNotification(row pgx.Row) (Notification, error) {
 	var readAt *time.Time
 	var expiresAt time.Time
 	var createdAt time.Time
-	if err := row.Scan(&notification.ID, &notification.UserID, &notification.App,
+	if err := row.Scan(&notification.ID, &notification.UserID, &notification.Env, &notification.App,
 		&notification.Type, &notification.Title, &notification.Body, &payload,
 		&readAt, &expiresAt, &createdAt); err != nil {
 		return Notification{}, err

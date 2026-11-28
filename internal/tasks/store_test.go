@@ -21,6 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kanatabi/lumen/internal/identity"
 	"github.com/kanatabi/lumen/internal/store"
 )
 
@@ -28,12 +29,13 @@ const defaultTestDBURL = "postgres://lumen:lumen-dev@localhost:5433/lumen?sslmod
 
 // fixture is one isolated schema plus the users every test talks through.
 type fixture struct {
-	t     *testing.T
-	store *Store
-	pool  *pgxpool.Pool
-	alice string
-	bob   string
-	carol string
+	t         *testing.T
+	store     *Store
+	pool      *pgxpool.Pool
+	directory identity.Directory
+	alice     string
+	bob       string
+	carol     string
 }
 
 // newFixture opens the dev cluster, creates a throwaway schema, migrates it
@@ -97,12 +99,13 @@ func newFixture(t *testing.T) *fixture {
 		return auth.ID
 	}
 	return &fixture{
-		t:     t,
-		store: NewStore(pool),
-		pool:  pool,
-		alice: seed("alice"),
-		bob:   seed("bob"),
-		carol: seed("carol"),
+		t:         t,
+		store:     NewStore(pool),
+		pool:      pool,
+		directory: identity.NewLocal(pg),
+		alice:     seed("alice"),
+		bob:       seed("bob"),
+		carol:     seed("carol"),
 	}
 }
 
@@ -399,8 +402,8 @@ func TestInvites(t *testing.T) {
 
 	invite, err := f.store.CreateInvite(ctx, f.alice, project.ID, f.bob, expires)
 	mustNoErr(t, err, "create invite")
-	if invite.ProjectName != "Home" || invite.InviterName != "alice" {
-		t.Fatalf("invite hydration = %+v", invite)
+	if invite.ProjectName != "Home" || invite.InviterID != f.alice {
+		t.Fatalf("invite row = %+v", invite)
 	}
 
 	// one PENDING invite per project+invitee (the unique index + sentinel)
@@ -510,9 +513,8 @@ func TestMemberRolesLastAdminAndUnassign(t *testing.T) {
 	task := f.mustTask(f.alice, project.ID, TaskInput{Title: "Fix gate", AssignedTo: ptr(f.bob)})
 	detail, err := f.store.GetTask(ctx, f.alice, task.ID)
 	mustNoErr(t, err, "get assigned task")
-	if detail.Task.AssignedTo == nil || *detail.Task.AssignedTo != f.bob ||
-		detail.Task.AssigneeName == nil || *detail.Task.AssigneeName != "bob" {
-		t.Fatalf("assignee hydration = %+v", detail.Task)
+	if detail.Task.AssignedTo == nil || *detail.Task.AssignedTo != f.bob {
+		t.Fatalf("assignee FK = %+v, want bob", detail.Task)
 	}
 
 	// removing bob (an admin with alice still admin) unassigns his tasks
@@ -563,8 +565,8 @@ func TestTaskCRUDSubtasksCommentsActivity(t *testing.T) {
 	detail, err := f.store.GetTask(ctx, f.alice, task.ID)
 	mustNoErr(t, err, "get created task")
 	if detail.Task.Title != "Fix gate" || detail.Task.Notes != "the hinge" ||
-		detail.Task.Priority != "high" || detail.Task.AssigneeName == nil ||
-		*detail.Task.AssigneeName != "bob" || detail.Task.Done {
+		detail.Task.Priority != "high" || detail.Task.AssignedTo == nil ||
+		*detail.Task.AssignedTo != f.bob || detail.Task.Done {
 		t.Fatalf("created task = %+v", detail.Task)
 	}
 	if len(detail.Subtasks) != 0 || len(detail.Comments) != 0 || len(detail.Activity) != 2 {
@@ -628,7 +630,7 @@ func TestTaskCRUDSubtasksCommentsActivity(t *testing.T) {
 	// comments: author-or-admin deletion
 	first, err := f.store.AddComment(ctx, f.bob, task.ID, "looks good")
 	mustNoErr(t, err, "add comment")
-	if first.AuthorName == nil || *first.AuthorName != "bob" {
+	if first.AuthorID == nil || *first.AuthorID != f.bob {
 		t.Fatalf("comment author = %+v", first)
 	}
 	second, err := f.store.AddComment(ctx, f.bob, task.ID, "one more thing")
@@ -810,12 +812,16 @@ func TestOnUserDeletedRepairsProjects(t *testing.T) {
 }
 
 // TestDisplayNameRollupsAndInviteeSearch pins the identity boundary: display
-// names are LABELS (the assignee/member references stay users.id UUIDs), and
-// the invite typeahead matches username/display prefixes or an EXACT email
-// while excluding members, pending invitees and disabled accounts.
+// names are LABELS hydrated through the identity directory (the DB rows keep
+// users.id UUIDs), the invite typeahead matches username/display prefixes or
+// an EXACT email, and a deleted account is healed lazily on the next read.
 func TestDisplayNameRollupsAndInviteeSearch(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
+	svc := NewService(f.store, f.directory, nil)
+	alice := principalFor(f.alice, "alice")
+	bob := principalFor(f.bob, "bob")
+	carol := principalFor(f.carol, "carol")
 
 	setProfile := func(id, name, email string) {
 		t.Helper()
@@ -833,8 +839,7 @@ func TestDisplayNameRollupsAndInviteeSearch(t *testing.T) {
 	f.addMember(project.ID, f.alice, f.bob)
 	task := f.mustTask(f.alice, project.ID, TaskInput{Title: "Fix gate", AssignedTo: ptr(f.bob)})
 
-	// the FK is the id; the label is the display name
-	detail, err := f.store.GetTask(ctx, f.alice, task.ID)
+	detail, err := svc.GetTask(ctx, alice, task.ID)
 	mustNoErr(t, err, "get assigned task")
 	if detail.Task.AssignedTo == nil || *detail.Task.AssignedTo != f.bob {
 		t.Fatalf("assignee FK = %v, want bob's users.id", detail.Task.AssignedTo)
@@ -845,7 +850,7 @@ func TestDisplayNameRollupsAndInviteeSearch(t *testing.T) {
 	if detail.Task.CreatorName == nil || *detail.Task.CreatorName != "Alice Archer" {
 		t.Fatalf("creator label = %v, want the display name", detail.Task.CreatorName)
 	}
-	members, err := f.store.ListMembers(ctx, f.alice, project.ID)
+	members, err := svc.ListMembers(ctx, alice, project.ID)
 	mustNoErr(t, err, "roster")
 	names := map[string]string{}
 	for _, member := range members {
@@ -857,35 +862,33 @@ func TestDisplayNameRollupsAndInviteeSearch(t *testing.T) {
 
 	// display-name prefix finds the non-member; members and the caller never
 	// appear (both are on the roster)
-	people, err := f.store.SearchInvitees(ctx, f.alice, project.ID, "car", 8)
+	people, err := svc.SearchInvitees(ctx, alice, project.ID, "@car")
 	mustNoErr(t, err, "search by display prefix")
 	if len(people) != 1 || people[0].Username != "carol" || people[0].Name != "Carol Danvers" {
 		t.Fatalf("display-prefix search = %+v", people)
 	}
-	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "bob", 8); len(people) != 0 {
+	if people, _ := svc.SearchInvitees(ctx, alice, project.ID, "bob"); len(people) != 0 {
 		t.Fatalf("member leaked into suggestions: %+v", people)
 	}
-	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "ali", 8); len(people) != 0 {
+	if people, _ := svc.SearchInvitees(ctx, alice, project.ID, "ali"); len(people) != 0 {
 		t.Fatalf("caller leaked into suggestions: %+v", people)
 	}
 
-	// username prefix works too (carol is still a non-member here)
-	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "caro", 8); len(people) != 1 {
-		t.Fatalf("username-prefix search = %+v", people)
-	}
-
 	// email is EXACT and case-insensitive; a partial address never matches
-	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "carol@example.com", 8); len(people) != 1 {
+	if people, _ := svc.SearchInvitees(ctx, alice, project.ID, "carol@example.com"); len(people) != 1 {
 		t.Fatalf("exact email search = %+v", people)
 	}
-	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "carol@example", 8); len(people) != 0 {
+	if people, _ := svc.SearchInvitees(ctx, alice, project.ID, "carol@example"); len(people) != 0 {
 		t.Fatalf("partial email matched (must be exact-only): %+v", people)
 	}
 
 	// a live pending invite removes the person from suggestions
-	invite, err := f.store.CreateInvite(ctx, f.alice, project.ID, f.carol, time.Now().Add(time.Hour))
+	invite, err := svc.CreateInvite(ctx, alice, project.ID, "@carol")
 	mustNoErr(t, err, "invite carol")
-	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "carol", 8); len(people) != 0 {
+	if invite.InviterName != "Alice Archer" {
+		t.Fatalf("invite inviter label = %q, want the display name", invite.InviterName)
+	}
+	if people, _ := svc.SearchInvitees(ctx, alice, project.ID, "carol"); len(people) != 0 {
 		t.Fatalf("pending invitee still suggested: %+v (invite %s)", people, invite.ID)
 	}
 
@@ -895,7 +898,7 @@ func TestDisplayNameRollupsAndInviteeSearch(t *testing.T) {
 		invite.ID); err != nil {
 		t.Fatalf("expire invite: %v", err)
 	}
-	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "carol", 8); len(people) != 1 {
+	if people, _ := svc.SearchInvitees(ctx, alice, project.ID, "carol"); len(people) != 1 {
 		t.Fatalf("expired invite suppressed the candidate: %+v", people)
 	}
 
@@ -903,23 +906,35 @@ func TestDisplayNameRollupsAndInviteeSearch(t *testing.T) {
 	if _, err := f.pool.Exec(ctx, `UPDATE users SET disabled = true WHERE id = $1::uuid`, f.carol); err != nil {
 		t.Fatalf("disable carol: %v", err)
 	}
-	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "carol", 8); len(people) != 0 {
+	if people, _ := svc.SearchInvitees(ctx, alice, project.ID, "carol"); len(people) != 0 {
 		t.Fatalf("disabled account suggested: %+v", people)
 	}
 
-	// the admin check is the second key: a member is forbidden, a non-member
-	// project is not-found (the tasks module's one denial voice)
+	// the admin check is the second key (the store's exclusion query)
 	mustErr(t, func() error {
-		_, err := f.store.SearchInvitees(ctx, f.bob, project.ID, "carol", 8)
+		_, err := svc.SearchInvitees(ctx, bob, project.ID, "carol")
 		return err
 	}(), ErrForbidden, "member search")
 	mustErr(t, func() error {
-		_, err := f.store.SearchInvitees(ctx, f.carol, project.ID, "alice", 8)
+		_, err := svc.SearchInvitees(ctx, carol, project.ID, "alice")
 		return err
 	}(), ErrNotFound, "non-member search")
 
-	// the cap is the store's too (a limit of 0 is an empty menu, not a dump)
-	if people, _ := f.store.SearchInvitees(ctx, f.alice, project.ID, "a", 0); len(people) != 0 {
-		t.Fatalf("zero limit returned rows: %+v", people)
+	// ---- lazy C4: deleting the account (no FK anymore) is healed on the
+	// next hydration: membership + assignment disappear, the roster survives.
+	if _, err := f.pool.Exec(ctx, `DELETE FROM users WHERE id = $1::uuid`, f.bob); err != nil {
+		t.Fatalf("delete bob: %v", err)
+	}
+	detail, err = svc.GetTask(ctx, alice, task.ID)
+	mustNoErr(t, err, "task after account deletion")
+	if detail.Task.AssignedTo != nil || detail.Task.AssigneeName != nil {
+		t.Fatalf("deleted assignee survived: %+v", detail.Task)
+	}
+	members, err = svc.ListMembers(ctx, alice, project.ID)
+	mustNoErr(t, err, "roster after account deletion")
+	for _, member := range members {
+		if member.UserID == f.bob {
+			t.Fatalf("deleted member survived the lazy repair: %+v", members)
+		}
 	}
 }

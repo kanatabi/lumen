@@ -26,6 +26,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kanatabi/lumen/internal/identity"
 	"github.com/kanatabi/lumen/internal/notifications"
 )
 
@@ -81,14 +82,235 @@ type Notifier interface {
 // membership; this layer owns validation, the TTL, identity resolution, and
 // best-effort notification sends.
 type Service struct {
-	store    *Store
-	notifier Notifier
+	store     *Store
+	directory identity.Directory
+	notifier  Notifier
 }
 
-// NewService binds the module. A nil notifier is legal (the route walk builds
-// the handler without one); notifications are then simply not sent.
-func NewService(store *Store, notifier Notifier) *Service {
-	return &Service{store: store, notifier: notifier}
+// NewService binds the module. The identity directory is the ONLY way this
+// app plane resolves people (the tasks DB has no users table). A nil notifier
+// is legal (the route walk builds the handler without one); notifications are
+// then simply not sent.
+func NewService(store *Store, directory identity.Directory, notifier Notifier) *Service {
+	return &Service{store: store, directory: directory, notifier: notifier}
+}
+
+// ---- identity hydration ----
+
+// uniqueIDs filters empty values and duplicates from a hydration request.
+func uniqueIDs(ids []string) []string {
+	seen := make(map[string]bool, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+// people hydrates ids through the identity directory and heals orphaned
+// references: a missing id means the account was deleted, so the local rows
+// that point at it are cleaned in the same pass (the 2026-11-29 lazy C4
+// repair — the admin plane can no longer call this process's task store).
+func (s *Service) people(ctx context.Context, ids []string) (map[string]identity.Person, error) {
+	out := map[string]identity.Person{}
+	if len(ids) == 0 || s.directory == nil {
+		return out, nil
+	}
+	unique := uniqueIDs(ids)
+	people, err := s.directory.PeopleByIDs(ctx, unique)
+	if err != nil {
+		return nil, err
+	}
+	missing := make([]string, 0)
+	for _, id := range unique {
+		if _, ok := people[id]; !ok {
+			missing = append(missing, id)
+			continue
+		}
+		out[id] = people[id]
+	}
+	if len(missing) > 0 {
+		if err := s.store.RepairMissingUsers(ctx, missing); err != nil {
+			slog.Warn("tasks.identity.repair", "count", len(missing), "err", err)
+		} else {
+			slog.Info("tasks.identity.repair", "count", len(missing))
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) hydrateTasks(ctx context.Context, tasks []Task) error {
+	ids := make([]string, 0, len(tasks)*2)
+	for _, task := range tasks {
+		if task.CreatedBy != nil {
+			ids = append(ids, *task.CreatedBy)
+		}
+		if task.AssignedTo != nil {
+			ids = append(ids, *task.AssignedTo)
+		}
+	}
+	people, err := s.people(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for index := range tasks {
+		if tasks[index].CreatedBy != nil {
+			if person, ok := people[*tasks[index].CreatedBy]; ok {
+				name := person.Name
+				tasks[index].CreatorName = &name
+			} else {
+				// the repair just removed the reference; the in-memory row
+				// must match the committed state, not the pre-repair read.
+				tasks[index].CreatedBy = nil
+				tasks[index].CreatorName = nil
+			}
+		}
+		if tasks[index].AssignedTo != nil {
+			if person, ok := people[*tasks[index].AssignedTo]; ok {
+				name := person.Name
+				tasks[index].AssigneeName = &name
+			} else {
+				tasks[index].AssignedTo = nil
+				tasks[index].AssigneeName = nil
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Service) hydrateDetail(ctx context.Context, detail *TaskDetail) error {
+	ids := make([]string, 0, len(detail.Comments)+len(detail.Activity)+2)
+	if detail.Task.CreatedBy != nil {
+		ids = append(ids, *detail.Task.CreatedBy)
+	}
+	if detail.Task.AssignedTo != nil {
+		ids = append(ids, *detail.Task.AssignedTo)
+	}
+	for _, comment := range detail.Comments {
+		if comment.AuthorID != nil {
+			ids = append(ids, *comment.AuthorID)
+		}
+	}
+	for _, activity := range detail.Activity {
+		if activity.ActorID != nil {
+			ids = append(ids, *activity.ActorID)
+		}
+	}
+	people, err := s.people(ctx, ids)
+	if err != nil {
+		return err
+	}
+	if detail.Task.CreatedBy != nil {
+		if person, ok := people[*detail.Task.CreatedBy]; ok {
+			name := person.Name
+			detail.Task.CreatorName = &name
+		} else {
+			detail.Task.CreatedBy = nil
+			detail.Task.CreatorName = nil
+		}
+	}
+	if detail.Task.AssignedTo != nil {
+		if person, ok := people[*detail.Task.AssignedTo]; ok {
+			name := person.Name
+			detail.Task.AssigneeName = &name
+		} else {
+			detail.Task.AssignedTo = nil
+			detail.Task.AssigneeName = nil
+		}
+	}
+	for index := range detail.Comments {
+		if detail.Comments[index].AuthorID != nil {
+			if person, ok := people[*detail.Comments[index].AuthorID]; ok {
+				name := person.Name
+				detail.Comments[index].AuthorName = &name
+			} else {
+				detail.Comments[index].AuthorID = nil
+				detail.Comments[index].AuthorName = nil
+			}
+		}
+	}
+	for index := range detail.Activity {
+		if detail.Activity[index].ActorID != nil {
+			if person, ok := people[*detail.Activity[index].ActorID]; ok {
+				name := person.Name
+				detail.Activity[index].ActorName = &name
+			} else {
+				detail.Activity[index].ActorID = nil
+				detail.Activity[index].ActorName = nil
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Service) hydrateMembers(ctx context.Context, members []Member) ([]Member, error) {
+	ids := make([]string, len(members))
+	for index, member := range members {
+		ids[index] = member.UserID
+	}
+	people, err := s.people(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Member, 0, len(members))
+	for _, member := range members {
+		person, ok := people[member.UserID]
+		if !ok {
+			// deleted account: the repair already removed the membership
+			continue
+		}
+		member.Username = person.Username
+		member.Name = person.Name
+		out = append(out, member)
+	}
+	return out, nil
+}
+
+func (s *Service) hydrateInvites(ctx context.Context, invites []Invite) ([]Invite, error) {
+	ids := make([]string, len(invites))
+	for index, invite := range invites {
+		ids[index] = invite.InviterID
+	}
+	people, err := s.people(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Invite, 0, len(invites))
+	for _, invite := range invites {
+		person, ok := people[invite.InviterID]
+		if !ok {
+			// the repair deleted invites whose inviter is gone
+			continue
+		}
+		invite.InviterName = person.Name
+		out = append(out, invite)
+	}
+	return out, nil
+}
+
+// assigneeLabel resolves the display name the 'assigned' activity row
+// records. A missing identity means an orphaned membership; the local rows
+// are healed and the assignment is refused as a conflict.
+func (s *Service) assigneeLabel(ctx context.Context, id string) (string, error) {
+	if s.directory == nil {
+		return "", nil
+	}
+	people, err := s.directory.PeopleByIDs(ctx, []string{id})
+	if err != nil {
+		return "", err
+	}
+	person, ok := people[id]
+	if !ok {
+		if err := s.store.RepairMissingUsers(ctx, []string{id}); err != nil {
+			slog.Warn("tasks.identity.repair", "count", 1, "err", err)
+		}
+		return "", ErrConflict
+	}
+	return person.Name, nil
 }
 
 // ---- validation ----
@@ -241,7 +463,11 @@ func (s *Service) SoftDeleteProject(ctx context.Context, principal Principal, pr
 
 // ListMembers delegates the roster read (membership-scoped in the store).
 func (s *Service) ListMembers(ctx context.Context, principal Principal, projectID string) ([]Member, error) {
-	return s.store.ListMembers(ctx, principal.ID, projectID)
+	members, err := s.store.ListMembers(ctx, principal.ID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateMembers(ctx, members)
 }
 
 // The invite typeahead's bounds: eight rows is a menu, not a directory; the
@@ -266,15 +492,41 @@ func inviteeQuery(raw string) string {
 	return query
 }
 
-// SearchInvitees is the invite typeahead's service door: normalize here, let
-// the store own the admin check and the exclusions. An empty query answers an
-// empty list — never the estate's directory.
+// SearchInvitees is the invite typeahead's service door: normalize here, ask
+// the identity directory for candidates, then drop the people the store says
+// are already members or have a live pending invite. An empty query answers
+// an empty list — never the estate's directory.
 func (s *Service) SearchInvitees(ctx context.Context, principal Principal, projectID, raw string) ([]InviteeCandidate, error) {
 	query := inviteeQuery(raw)
 	if query == "" {
 		return []InviteeCandidate{}, nil
 	}
-	return s.store.SearchInvitees(ctx, principal.ID, projectID, query, inviteeSearchLimit)
+	excluded, err := s.store.ExcludedInviteeIDs(ctx, principal.ID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if s.directory == nil {
+		return []InviteeCandidate{}, nil
+	}
+	limit := inviteeSearchLimit + len(excluded)
+	if limit > 32 {
+		limit = 32
+	}
+	people, err := s.directory.SearchPeople(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]InviteeCandidate, 0, inviteeSearchLimit)
+	for _, person := range people {
+		if excluded[person.ID] {
+			continue
+		}
+		out = append(out, person)
+		if len(out) == inviteeSearchLimit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // SetMemberRole validates the role grammar, then delegates; the store's
@@ -308,9 +560,12 @@ func (s *Service) CreateInvite(ctx context.Context, principal Principal, project
 	if trimmed == "" {
 		return Invite{}, fmt.Errorf("%w: username is required", ErrInvalid)
 	}
-	inviteeID, err := s.store.UserIDByUsername(ctx, trimmed)
+	if s.directory == nil {
+		return Invite{}, fmt.Errorf("%w: identity directory unavailable", ErrInvalid)
+	}
+	inviteeID, err := s.directory.IDByUsername(ctx, trimmed)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, identity.ErrNotFound) {
 			// A mistyped invitee is the caller's copy being wrong (400),
 			// not a hidden estate resource (404).
 			return Invite{}, fmt.Errorf("%w: unknown username %q", ErrInvalid, trimmed)
@@ -321,6 +576,14 @@ func (s *Service) CreateInvite(ctx context.Context, principal Principal, project
 	if err != nil {
 		return Invite{}, err
 	}
+	invites, err := s.hydrateInvites(ctx, []Invite{invite})
+	if err != nil {
+		return Invite{}, err
+	}
+	if len(invites) == 0 {
+		return Invite{}, ErrConflict // the inviter's identity vanished mid-write
+	}
+	invite = invites[0]
 	s.notifyInvite(ctx, principal, invite)
 	return invite, nil
 }
@@ -328,13 +591,28 @@ func (s *Service) CreateInvite(ctx context.Context, principal Principal, project
 // ListInvites delegates the caller's pending inbox (the store filters the TTL
 // and dead projects).
 func (s *Service) ListInvites(ctx context.Context, principal Principal) ([]Invite, error) {
-	return s.store.ListInvitesFor(ctx, principal.ID)
+	invites, err := s.store.ListInvitesFor(ctx, principal.ID)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateInvites(ctx, invites)
 }
 
 // AcceptInvite delegates the consume-and-join transaction (the store answers
 // ErrExpired with the row already deleted).
 func (s *Service) AcceptInvite(ctx context.Context, principal Principal, inviteID string) (Invite, error) {
-	return s.store.AcceptInvite(ctx, principal.ID, inviteID)
+	invite, err := s.store.AcceptInvite(ctx, principal.ID, inviteID)
+	if err != nil {
+		return Invite{}, err
+	}
+	invites, err := s.hydrateInvites(ctx, []Invite{invite})
+	if err != nil {
+		return Invite{}, err
+	}
+	if len(invites) == 0 {
+		return Invite{}, ErrNotFound
+	}
+	return invites[0], nil
 }
 
 // DeclineInvite delegates the invitee's own delete.
@@ -356,8 +634,18 @@ func (s *Service) CreateTask(ctx context.Context, principal Principal, projectID
 	if err != nil {
 		return Task{}, err
 	}
+	if normalized.AssignedTo != nil {
+		label, err := s.assigneeLabel(ctx, *normalized.AssignedTo)
+		if err != nil {
+			return Task{}, err
+		}
+		normalized.AssigneeName = label
+	}
 	task, err := s.store.CreateTask(ctx, principal.ID, projectID, normalized)
 	if err != nil {
+		return Task{}, err
+	}
+	if err := s.hydrateTasks(ctx, []Task{task}); err != nil {
 		return Task{}, err
 	}
 	if task.AssignedTo != nil && *task.AssignedTo != principal.ID {
@@ -374,12 +662,26 @@ func (s *Service) ListTasks(ctx context.Context, principal Principal, view, proj
 	default:
 		return nil, fmt.Errorf("%w: view must be today, upcoming or all", ErrInvalid)
 	}
-	return s.store.ListTasks(ctx, principal.ID, view, projectID, location)
+	tasks, err := s.store.ListTasks(ctx, principal.ID, view, projectID, location)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.hydrateTasks(ctx, tasks); err != nil {
+		return nil, err
+	}
+	return tasks, nil
 }
 
 // GetTask delegates the drawer's snapshot read.
 func (s *Service) GetTask(ctx context.Context, principal Principal, taskID string) (TaskDetail, error) {
-	return s.store.GetTask(ctx, principal.ID, taskID)
+	detail, err := s.store.GetTask(ctx, principal.ID, taskID)
+	if err != nil {
+		return TaskDetail{}, err
+	}
+	if err := s.hydrateDetail(ctx, &detail); err != nil {
+		return TaskDetail{}, err
+	}
+	return detail, nil
 }
 
 // UpdateTask validates the present patch fields, delegates, and notifies the
@@ -396,8 +698,19 @@ func (s *Service) UpdateTask(ctx context.Context, principal Principal, taskID st
 	if err != nil {
 		return Task{}, err
 	}
+	if patch.AssignedTo.Set && patch.AssignedTo.Value != nil &&
+		!sameStringID(patch.AssignedTo.Value, previous.Task.AssignedTo) {
+		label, err := s.assigneeLabel(ctx, *patch.AssignedTo.Value)
+		if err != nil {
+			return Task{}, err
+		}
+		patch.AssigneeName = label
+	}
 	updated, err := s.store.UpdateTask(ctx, principal.ID, taskID, patch)
 	if err != nil {
+		return Task{}, err
+	}
+	if err := s.hydrateTasks(ctx, []Task{updated}); err != nil {
 		return Task{}, err
 	}
 	assigneeChanged := patch.AssignedTo.Set && !sameStringID(patch.AssignedTo.Value, previous.Task.AssignedTo)
@@ -409,7 +722,14 @@ func (s *Service) UpdateTask(ctx context.Context, principal Principal, taskID st
 
 // ToggleTask delegates the done flip.
 func (s *Service) ToggleTask(ctx context.Context, principal Principal, taskID string) (Task, error) {
-	return s.store.ToggleTask(ctx, principal.ID, taskID)
+	task, err := s.store.ToggleTask(ctx, principal.ID, taskID)
+	if err != nil {
+		return Task{}, err
+	}
+	if err := s.hydrateTasks(ctx, []Task{task}); err != nil {
+		return Task{}, err
+	}
+	return task, nil
 }
 
 // SoftDeleteTask delegates the deleted_at flag.
@@ -456,7 +776,21 @@ func (s *Service) AddComment(ctx context.Context, principal Principal, taskID, b
 	if err := validateSize("comment body", trimmed, maxCommentBytes); err != nil {
 		return Comment{}, err
 	}
-	return s.store.AddComment(ctx, principal.ID, taskID, trimmed)
+	comment, err := s.store.AddComment(ctx, principal.ID, taskID, trimmed)
+	if err != nil {
+		return Comment{}, err
+	}
+	if comment.AuthorID != nil {
+		people, err := s.people(ctx, []string{*comment.AuthorID})
+		if err != nil {
+			return Comment{}, err
+		}
+		if person, ok := people[*comment.AuthorID]; ok {
+			name := person.Name
+			comment.AuthorName = &name
+		}
+	}
+	return comment, nil
 }
 
 // DeleteComment delegates the author-or-admin delete.
@@ -470,7 +804,7 @@ func (s *Service) DeleteComment(ctx context.Context, principal Principal, taskID
 // FK cascade: promote the next admin (or soft-delete an empty project). The
 // store's scan is idempotent and correct pre- or post-delete.
 func (s *Service) OnUserDeleted(ctx context.Context, userID string) error {
-	return s.store.OnUserDeleted(ctx, userID)
+	return s.store.RepairMissingUsers(ctx, []string{userID})
 }
 
 // Stats delegates the four-card rollup, which is computed in the caller's

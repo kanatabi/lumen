@@ -42,6 +42,15 @@ type Config struct {
 	SessionSecret string // HS256 key, 32B, Bao lumen/{env} — ADMIN-PLANE ONLY (§8)
 	AdminURL      string // cms plane: base URL of the admin plane to introspect (§8 verify)
 
+	// The app-plane boundary (2026-11-29): Env names THIS deployment's
+	// tenant (staging|production) for task notifications; IdentityToken is
+	// the in-cluster token the admin identity door validates (cms) / serves
+	// (admin); NotificationToken lets the cms tasks app use the admin's
+	// send door. None is a user credential.
+	Env               string // LUMEN_ENV — cms only
+	IdentityToken     string // LUMEN_IDENTITY_TOKEN — both planes
+	NotificationToken string // LUMEN_NOTIFICATION_TOKEN — cms uses the admin door
+
 	// WebAuthn (the passkey round, C1): the relying-party identity. BOTH
 	// empty = passkey disabled (the methods endpoint omits it — the
 	// portal's login UI degrades gracefully). RPID is the REGISTRABLE
@@ -137,6 +146,9 @@ var Bindings = []Binding{
 	{Key: "webauthn_rp_id", Envs: []string{"LUMEN_WEBAUTHN_RP_ID"}, Planes: role.PlaneAdmin},
 	{Key: "webauthn_origins", Envs: []string{"LUMEN_WEBAUTHN_ORIGINS"}, Planes: role.PlaneAdmin},
 	{Key: "admin_url", Envs: []string{"LUMEN_ADMIN_URL"}, Planes: role.PlaneCMS},
+	{Key: "env", Envs: []string{"LUMEN_ENV"}, Planes: role.PlaneCMS},
+	{Key: "identity_token", Envs: []string{"LUMEN_IDENTITY_TOKEN"}, Planes: bothPlanes},
+	{Key: "notification_token", Envs: []string{"LUMEN_NOTIFICATION_TOKEN"}, Planes: bothPlanes},
 	{Key: "origin", Envs: []string{"LUMEN_ORIGIN"}, Planes: role.PlaneCMS},
 	{Key: "meili_url", Envs: []string{"LUMEN_MEILI_URL"}, Planes: role.PlaneCMS},
 	{Key: "meili_key", Envs: []string{"LUMEN_MEILI_KEY"}, Planes: role.PlaneCMS},
@@ -293,20 +305,23 @@ func Load() (Config, error) {
 	}
 
 	c := Config{
-		Role:             rt,
-		Port:             v.GetString("port"),
-		MetricsPort:      get("metrics_port"),
-		timeouts:         timeouts,
-		DBURL:            get("db_url"),
-		Origin:           get("origin"),
-		MeiliURL:         get("meili_url"),
-		MeiliKey:         get("meili_key"),
-		SessionSecret:    get("session_jwt_secret"),
-		AdminURL:         get("admin_url"),
-		WebAuthnRPID:     get("webauthn_rp_id"),
-		WebAuthnOrigins:  get("webauthn_origins"),
-		MeiliIndexPosts:  get("meili_index_posts"),
-		MeiliIndexPhotos: get("meili_index_photos"),
+		Role:              rt,
+		Port:              v.GetString("port"),
+		MetricsPort:       get("metrics_port"),
+		timeouts:          timeouts,
+		DBURL:             get("db_url"),
+		Origin:            get("origin"),
+		MeiliURL:          get("meili_url"),
+		MeiliKey:          get("meili_key"),
+		SessionSecret:     get("session_jwt_secret"),
+		AdminURL:          get("admin_url"),
+		Env:               get("env"),
+		IdentityToken:     get("identity_token"),
+		NotificationToken: get("notification_token"),
+		WebAuthnRPID:      get("webauthn_rp_id"),
+		WebAuthnOrigins:   get("webauthn_origins"),
+		MeiliIndexPosts:   get("meili_index_posts"),
+		MeiliIndexPhotos:  get("meili_index_photos"),
 		Media: Media{
 			Endpoint:     get("media_endpoint"),
 			Region:       get("media_region"),
@@ -337,9 +352,21 @@ func (c Config) ValidateServer() error {
 		if c.SessionSecret == "" {
 			return fmt.Errorf("session_jwt_secret (LUMEN_SESSION_JWT_SECRET) required to serve the admin plane")
 		}
+		// The identity door is how the app planes resolve people; without a
+		// token it cannot be mounted, and staging/production tasks would
+		// boot against a door that does not exist.
+		if c.IdentityToken == "" {
+			return fmt.Errorf("LUMEN_IDENTITY_TOKEN required on the admin plane — the app planes resolve identities through it")
+		}
 	case role.CMS:
 		if c.AdminURL == "" {
 			return fmt.Errorf("LUMEN_ADMIN_URL required on the cms plane — bearer tokens are introspected against the admin plane (fail-closed design; the cms plane holds no signing key by ruling)")
+		}
+		if c.Env == "" {
+			return fmt.Errorf("LUMEN_ENV required on the cms plane — it scopes task notifications to this environment")
+		}
+		if c.IdentityToken == "" {
+			return fmt.Errorf("LUMEN_IDENTITY_TOKEN required on the cms plane — the tasks app resolves people through the admin identity door")
 		}
 	}
 	return nil

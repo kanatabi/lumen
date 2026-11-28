@@ -28,6 +28,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kanatabi/lumen/internal/identity"
 )
 
 // ErrNotFound is the ONE denial voice: an unknown id, a row belonging to
@@ -97,9 +99,9 @@ type Project struct {
 	OpenCount   int
 }
 
-// Member is one roster line. Username rides the users.id identity seam for
-// display only — no other user column is read. Name is the account's display
-// name (the roster's primary label); the username stays the disambiguator.
+// Member is one roster line. The row carries the users.id only; Username and
+// Name are hydrated by the service through the identity directory (the tasks
+// DB has no users table — the 2026-11-29 app-plane split).
 type Member struct {
 	UserID    string
 	Username  string
@@ -109,13 +111,8 @@ type Member struct {
 	JoinedAt  time.Time
 }
 
-// InviteeCandidate is one invite-typeahead row. Username + display name are
-// the ONLY user columns the tasks plane reads back; email is a MATCH KEY
-// (exact, case-insensitive) and is deliberately never selected.
-type InviteeCandidate struct {
-	Username string
-	Name     string
-}
+// InviteeCandidate is the wire alias for an identity search row.
+type InviteeCandidate = identity.Person
 
 // Invite is one pending invitation, hydrated with the project and inviter
 // names the notification copy needs (M2 sends; this store never notifies).
@@ -132,8 +129,9 @@ type Invite struct {
 
 // Task is one task row plus the display rollups the grouped workspace needs.
 // AssignedTo/CreatedBy are the users.id handles — the ONLY identity the write
-// paths accept; AssigneeName/CreatorName are read-only labels rendered from
-// users.display_name (NULL when the account was deleted — the row survives).
+// paths accept; AssigneeName/CreatorName are read-only labels hydrated from
+// the identity directory (NULL when the account was deleted — the row
+// survives).
 type Task struct {
 	ID           string
 	ProjectID    string
@@ -165,6 +163,9 @@ type TaskInput struct {
 	Priority   string
 	DueAt      *time.Time
 	AssignedTo *string
+	// AssigneeName is the activity detail the service resolved before the
+	// write (never a wire field): the tasks DB cannot join users.
+	AssigneeName string
 }
 
 // TaskPatch is a field-presence patch. Only fields marked Set are written;
@@ -175,6 +176,9 @@ type TaskPatch struct {
 	Priority   Optional[string]
 	DueAt      Optional[*time.Time]
 	AssignedTo Optional[*string]
+	// AssigneeName is the activity detail resolved by the service for a new
+	// assignee (internal, never read from the wire).
+	AssigneeName string
 }
 
 // Subtask is one checklist row.
@@ -365,24 +369,24 @@ func (s *Store) lockMember(ctx context.Context, tx pgx.Tx, callerID, projectID s
 	return role, nil
 }
 
-// assigneeForAssignment resolves a prospective assignee through the project
+// lockAssigneeMembership validates a prospective assignee through the project
 // roster and LOCKS that membership row (KEY SHARE): RemoveMember deletes the
 // membership first and clears assignments second, both inside one tx, so a
 // racing assignment either blocks until the removal is done (and then sees no
 // member → ErrConflict) or is already committed when the removal clears it.
-// The returned username is the activity detail (a person, not a UUID).
-func (s *Store) assigneeForAssignment(ctx context.Context, tx pgx.Tx, projectID, userID string) (string, error) {
-	var username string
+// The display name for the activity detail is resolved by the service before
+// the write (this DB has no users table).
+func (s *Store) lockAssigneeMembership(ctx context.Context, tx pgx.Tx, projectID, userID string) error {
+	var one int
 	err := tx.QueryRow(ctx, `
-		SELECT u.username
+		SELECT 1
 		  FROM task_project_members m
-		  JOIN users u ON u.id = m.user_id
 		  JOIN task_projects p ON p.id = m.project_id
 		 WHERE m.project_id = $1::uuid
 		   AND m.user_id = $2::uuid
 		   AND p.deleted_at IS NULL
-		   FOR KEY SHARE OF m`, projectID, userID).Scan(&username)
-	return username, notFound(err)
+		   FOR KEY SHARE OF m`, projectID, userID).Scan(&one)
+	return notFound(err)
 }
 
 // writeActivity appends one timeline row inside the caller's transaction.
@@ -534,15 +538,14 @@ func (s *Store) SoftDeleteProject(ctx context.Context, callerID, projectID strin
 
 // ---- members ----
 
-// ListMembers returns the live project's roster, hydrated with usernames via
-// the users.id identity seam. The caller-membership join is mandatory: a
-// non-member gets zero rows, which this method reports as ErrNotFound (a live
-// project always has at least one member, so zero is denial, not empty).
+// ListMembers returns the live project's roster. The caller-membership join
+// is mandatory: a non-member gets zero rows, which this method reports as
+// ErrNotFound (a live project always has at least one member, so zero is
+// denial, not empty). Username/Name are hydrated by the service.
 func (s *Store) ListMembers(ctx context.Context, callerID, projectID string) ([]Member, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT m.user_id, u.username, u.display_name, m.role, m.invited_by, m.joined_at
+		SELECT m.user_id, m.role, m.invited_by, m.joined_at
 		  FROM task_project_members m
-		  JOIN users u ON u.id = m.user_id
 		  JOIN task_projects p ON p.id = m.project_id
 		  JOIN task_project_members me
 		    ON me.project_id = m.project_id AND me.user_id = $2::uuid
@@ -556,7 +559,7 @@ func (s *Store) ListMembers(ctx context.Context, callerID, projectID string) ([]
 	out := []Member{}
 	for rows.Next() {
 		var member Member
-		if err := rows.Scan(&member.UserID, &member.Username, &member.Name, &member.Role,
+		if err := rows.Scan(&member.UserID, &member.Role,
 			&member.InvitedBy, &member.JoinedAt); err != nil {
 			return nil, err
 		}
@@ -571,15 +574,10 @@ func (s *Store) ListMembers(ctx context.Context, callerID, projectID string) ([]
 	return out, nil
 }
 
-// SearchInvitees is the invite typeahead: the project-admin's people search.
-// It matches username prefix (ranked first), display-name prefix, or the
-// EXACT case-insensitive email — the caller passes an already-lowercased,
-// trimmed query. Members, the caller, disabled accounts and people with a
-// live pending invite are excluded so every row is actionable. The email is
-// a predicate only; it is never returned (the profile round's privacy rule).
-func (s *Store) SearchInvitees(ctx context.Context, callerID, projectID, query string, limit int) ([]InviteeCandidate, error) {
-	// A read-only role check, not the write verbs' lockProjectRole: a search
-	// must never queue behind (or block) project settings writes.
+// ExcludedInviteeIDs is the invite typeahead's LOCAL half: the project
+// admin check plus the people who must not be suggested (current members and
+// live pending invitees). The identity directory supplies the candidates.
+func (s *Store) ExcludedInviteeIDs(ctx context.Context, callerID, projectID string) (map[string]bool, error) {
 	var role string
 	err := s.pool.QueryRow(ctx, `
 		SELECT m.role
@@ -595,35 +593,23 @@ func (s *Store) SearchInvitees(ctx context.Context, callerID, projectID, query s
 		return nil, ErrForbidden
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT u.username, u.display_name
-		  FROM users u
-		 WHERE u.id <> $1::uuid
-		   AND NOT u.disabled
-		   AND (starts_with(lower(u.username), $2)
-		        OR starts_with(lower(u.display_name), $2)
-		        OR u.email = $2)
-		   AND NOT EXISTS (SELECT 1 FROM task_project_members m
-		                    WHERE m.project_id = $3::uuid AND m.user_id = u.id)
-		   AND NOT EXISTS (SELECT 1 FROM task_project_invites i
-		                    WHERE i.project_id = $3::uuid AND i.invitee_id = u.id
-		                      AND i.expires_at > now())
-		 ORDER BY (u.username = $2) DESC,
-		          starts_with(lower(u.username), $2) DESC,
-		          u.username
-		 LIMIT $4`, callerID, query, projectID, limit)
+		SELECT user_id FROM task_project_members WHERE project_id = $1::uuid
+		UNION
+		SELECT invitee_id FROM task_project_invites
+		 WHERE project_id = $1::uuid AND expires_at > now()`, projectID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []InviteeCandidate{}
+	excluded := map[string]bool{}
 	for rows.Next() {
-		var candidate InviteeCandidate
-		if err := rows.Scan(&candidate.Username, &candidate.Name); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		out = append(out, candidate)
+		excluded[id] = true
 	}
-	return out, rows.Err()
+	return excluded, rows.Err()
 }
 
 // SetMemberRole is admin-only (C2: many admins, promote AND demote). It locks
@@ -722,30 +708,16 @@ func (s *Store) RemoveMember(ctx context.Context, callerID, projectID, targetID 
 
 // ---- invites ----
 
-// UserIDByUsername resolves the invite wire's username to the identity id
-// (the users.id seam). An unknown name is ErrNotFound; the service maps it to
-// ErrInvalid because a mistyped invitee is the caller's typo, not a hidden
-// estate resource. This is the ONLY user lookup the tasks module performs
-// beyond its identity-display joins.
-func (s *Store) UserIDByUsername(ctx context.Context, username string) (string, error) {
-	var id string
-	if err := s.pool.QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, username).Scan(&id); err != nil {
-		return "", notFound(err)
-	}
-	return id, nil
-}
-
 const inviteSelect = `
-	SELECT i.id, i.project_id, p.name, i.inviter_id, inviter.username,
+	SELECT i.id, i.project_id, p.name, i.inviter_id,
 	       i.invitee_id, i.expires_at, i.created_at
 	  FROM task_project_invites i
-	  JOIN task_projects p ON p.id = i.project_id
-	  JOIN users inviter ON inviter.id = i.inviter_id`
+	  JOIN task_projects p ON p.id = i.project_id`
 
 func scanInvite(row pgx.Row) (Invite, error) {
 	var invite Invite
 	err := row.Scan(&invite.ID, &invite.ProjectID, &invite.ProjectName,
-		&invite.InviterID, &invite.InviterName, &invite.InviteeID,
+		&invite.InviterID, &invite.InviteeID,
 		&invite.ExpiresAt, &invite.CreatedAt)
 	return invite, err
 }
@@ -840,17 +812,16 @@ func (s *Store) AcceptInvite(ctx context.Context, callerID, inviteID string) (In
 	var invite Invite
 	var projectDeleted, expired bool
 	err = tx.QueryRow(ctx, `
-		SELECT i.id, i.project_id, p.name, i.inviter_id, inviter.username,
+		SELECT i.id, i.project_id, p.name, i.inviter_id,
 		       i.invitee_id, i.expires_at, i.created_at,
 		       p.deleted_at IS NOT NULL,
 		       i.expires_at <= now()
 		  FROM task_project_invites i
 		  JOIN task_projects p ON p.id = i.project_id
-		  JOIN users inviter ON inviter.id = i.inviter_id
 		 WHERE i.id = $1::uuid AND i.invitee_id = $2::uuid
 		   FOR UPDATE OF i`, inviteID, callerID).
 		Scan(&invite.ID, &invite.ProjectID, &invite.ProjectName,
-			&invite.InviterID, &invite.InviterName, &invite.InviteeID,
+			&invite.InviterID, &invite.InviteeID,
 			&invite.ExpiresAt, &invite.CreatedAt, &projectDeleted, &expired)
 	if err != nil {
 		return Invite{}, notFound(err)
@@ -931,22 +902,20 @@ func (s *Store) RevokeInvite(ctx context.Context, callerID, projectID, inviteID 
 // ---- tasks ----
 
 const taskSelect = `
-	SELECT t.id, t.project_id, p.name, t.created_by, creator.display_name,
-	       t.assigned_to, assignee.display_name,
+	SELECT t.id, t.project_id, p.name, t.created_by,
+	       t.assigned_to,
 	       t.title, t.notes, t.priority, t.due_at, t.done, t.done_at,
 	       t.deleted_at, t.created_at, t.updated_at,
 	       (SELECT count(*) FROM task_comments c WHERE c.task_id = t.id),
 	       (SELECT count(*) FROM task_subtasks s WHERE s.task_id = t.id),
 	       (SELECT count(*) FROM task_subtasks s WHERE s.task_id = t.id AND s.done)
 	  FROM task_tasks t
-	  JOIN task_projects p ON p.id = t.project_id
-	  LEFT JOIN users creator ON creator.id = t.created_by
-	  LEFT JOIN users assignee ON assignee.id = t.assigned_to`
+	  JOIN task_projects p ON p.id = t.project_id`
 
 func scanTask(row pgx.Row) (Task, error) {
 	var task Task
 	err := row.Scan(&task.ID, &task.ProjectID, &task.ProjectName,
-		&task.CreatedBy, &task.CreatorName, &task.AssignedTo, &task.AssigneeName,
+		&task.CreatedBy, &task.AssignedTo,
 		&task.Title, &task.Notes, &task.Priority, &task.DueAt, &task.Done, &task.DoneAt,
 		&task.DeletedAt, &task.CreatedAt, &task.UpdatedAt,
 		&task.CommentCount, &task.SubtaskCount, &task.SubtaskDone)
@@ -980,16 +949,13 @@ func (s *Store) CreateTask(ctx context.Context, callerID, projectID string, in T
 		if _, err := s.lockMember(ctx, tx, callerID, projectID); err != nil {
 			return err
 		}
-		assigneeName := ""
 		if in.AssignedTo != nil {
-			name, err := s.assigneeForAssignment(ctx, tx, projectID, *in.AssignedTo)
-			if err != nil {
+			if err := s.lockAssigneeMembership(ctx, tx, projectID, *in.AssignedTo); err != nil {
 				if errors.Is(err, ErrNotFound) {
 					return ErrConflict // the assignee must be a project member (C3)
 				}
 				return err
 			}
-			assigneeName = name
 		}
 		priority := in.Priority
 		if priority == "" {
@@ -1008,7 +974,7 @@ func (s *Store) CreateTask(ctx context.Context, callerID, projectID string, in T
 			return err
 		}
 		if in.AssignedTo != nil {
-			if err := writeActivity(ctx, tx, taskID, callerID, "assigned", assigneeName); err != nil {
+			if err := writeActivity(ctx, tx, taskID, callerID, "assigned", in.AssigneeName); err != nil {
 				return err
 			}
 		}
@@ -1144,9 +1110,8 @@ func (s *Store) GetTask(ctx context.Context, callerID, taskID string) (TaskDetai
 			}
 
 			commentRows, err := tx.Query(ctx, `
-				SELECT c.id, c.task_id, c.author_id, u.username, c.body, c.created_at
+				SELECT c.id, c.task_id, c.author_id, c.body, c.created_at
 				  FROM task_comments c
-				  LEFT JOIN users u ON u.id = c.author_id
 				 WHERE c.task_id = $1::uuid
 				 ORDER BY c.created_at, c.id`, taskID)
 			if err != nil {
@@ -1156,7 +1121,7 @@ func (s *Store) GetTask(ctx context.Context, callerID, taskID string) (TaskDetai
 			for commentRows.Next() {
 				var comment Comment
 				if err := commentRows.Scan(&comment.ID, &comment.TaskID, &comment.AuthorID,
-					&comment.AuthorName, &comment.Body, &comment.CreatedAt); err != nil {
+					&comment.Body, &comment.CreatedAt); err != nil {
 					commentRows.Close()
 					return err
 				}
@@ -1168,9 +1133,8 @@ func (s *Store) GetTask(ctx context.Context, callerID, taskID string) (TaskDetai
 			}
 
 			activityRows, err := tx.Query(ctx, `
-				SELECT a.id, a.task_id, a.actor_id, u.username, a.verb, a.detail, a.created_at
+				SELECT a.id, a.task_id, a.actor_id, a.verb, a.detail, a.created_at
 				  FROM task_activity a
-				  LEFT JOIN users u ON u.id = a.actor_id
 				 WHERE a.task_id = $1::uuid
 				 ORDER BY a.created_at, a.id`, taskID)
 			if err != nil {
@@ -1180,7 +1144,7 @@ func (s *Store) GetTask(ctx context.Context, callerID, taskID string) (TaskDetai
 			for activityRows.Next() {
 				var activity Activity
 				if err := activityRows.Scan(&activity.ID, &activity.TaskID, &activity.ActorID,
-					&activity.ActorName, &activity.Verb, &activity.Detail, &activity.CreatedAt); err != nil {
+					&activity.Verb, &activity.Detail, &activity.CreatedAt); err != nil {
 					activityRows.Close()
 					return err
 				}
@@ -1224,16 +1188,13 @@ func (s *Store) UpdateTask(ctx context.Context, callerID, taskID string, patch T
 		}
 
 		assigneeChanged := patch.AssignedTo.Set && !sameStringID(patch.AssignedTo.Value, oldAssignedTo)
-		assigneeName := ""
 		if assigneeChanged && patch.AssignedTo.Value != nil {
-			name, err := s.assigneeForAssignment(ctx, tx, projectID, *patch.AssignedTo.Value)
-			if err != nil {
+			if err := s.lockAssigneeMembership(ctx, tx, projectID, *patch.AssignedTo.Value); err != nil {
 				if errors.Is(err, ErrNotFound) {
 					return ErrConflict // C3: the assignee must be a project member
 				}
 				return err
 			}
-			assigneeName = name
 		}
 
 		if _, err := tx.Exec(ctx, `
@@ -1274,7 +1235,7 @@ func (s *Store) UpdateTask(ctx context.Context, callerID, taskID string, patch T
 			}
 		}
 		if assigneeChanged {
-			detail := assigneeName
+			detail := patch.AssigneeName
 			if patch.AssignedTo.Value == nil {
 				detail = "unassigned"
 			}
@@ -1468,12 +1429,6 @@ func (s *Store) AddComment(ctx context.Context, callerID, taskID, body string) (
 		if err != nil {
 			return notFound(err)
 		}
-		var username string
-		if err := tx.QueryRow(ctx, `
-			SELECT username FROM users WHERE id = $1::uuid`, callerID).Scan(&username); err != nil {
-			return notFound(err)
-		}
-		comment.AuthorName = &username
 		return writeActivity(ctx, tx, comment.TaskID, callerID, "commented", "")
 	})
 	return comment, err
@@ -1553,80 +1508,101 @@ func (s *Store) Stats(ctx context.Context, callerID string, loc *time.Location) 
 
 // ---- lifecycle ----
 
-// OnUserDeleted is the C4 repair hook, run best-effort AFTER the user row is
-// deleted. By then the FK CASCADE has already removed the user's membership
-// rows (and invites; actor/creator/assignee references are SET NULL), so the
-// user's former projects cannot be looked up FROM the user — instead the hook
-// scans live projects for the injury the deletion can cause: zero admins
-// remaining. That scan is what makes the hook idempotent and able to heal a
-// project left adminless by any earlier deletion.
-//
-// The userID is still load-bearing: memberships are filtered as if the user
-// were already gone (user_id <> $1), so the hook is also correct if it is
-// wired BEFORE the delete — the doomed user can neither block the "no admin"
-// test nor be chosen as the inheriting admin. Per project: promote the
-// earliest-joined remaining member to admin; if no member remains, soft-delete
-// the project (never a destructive delete, C4). The whole repair is one
-// transaction; re-running it is a no-op.
-func (s *Store) OnUserDeleted(ctx context.Context, userID string) error {
+// RepairMissingUsers is the C4 repair, now driven by the identity directory:
+// the admin plane can no longer call this process synchronously (tasks lives
+// on the cms plane), so the service notices deleted accounts during
+// hydration and heals here. There is no users FK/cascade in this database,
+// so the local rows are cleaned explicitly: memberships and invites are
+// deleted, person references are nulled, and every live project that lost
+// its last admin is repaired (promote the earliest remaining member, or
+// soft-delete a memberless project). Idempotent: re-running is a no-op.
+func (s *Store) RepairMissingUsers(ctx context.Context, userIDs []string) error {
+	if len(userIDs) == 0 {
+		return nil
+	}
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `
-			SELECT p.id
-			  FROM task_projects p
-			 WHERE p.deleted_at IS NULL
-			   AND NOT EXISTS (
-			         SELECT 1
-			           FROM task_project_members admin
-			          WHERE admin.project_id = p.id
-			            AND admin.role = 'admin'
-			            AND admin.user_id <> $1::uuid)
-			 ORDER BY p.id
-			 FOR UPDATE OF p`, userID)
-		if err != nil {
-			return notFound(err) // a malformed id names no user and no project
-		}
-		projectIDs := []string{}
-		for rows.Next() {
-			var projectID string
-			if err := rows.Scan(&projectID); err != nil {
-				rows.Close()
+		for _, statement := range []string{
+			`DELETE FROM task_project_members WHERE user_id = ANY($1::uuid[])`,
+			`DELETE FROM task_project_invites WHERE invitee_id = ANY($1::uuid[]) OR inviter_id = ANY($1::uuid[])`,
+			`UPDATE task_project_members SET invited_by = NULL WHERE invited_by = ANY($1::uuid[])`,
+			`UPDATE task_projects SET creator_id = NULL WHERE creator_id = ANY($1::uuid[])`,
+			`UPDATE task_tasks SET assigned_to = NULL WHERE assigned_to = ANY($1::uuid[])`,
+			`UPDATE task_tasks SET created_by = NULL WHERE created_by = ANY($1::uuid[])`,
+			`UPDATE task_comments SET author_id = NULL WHERE author_id = ANY($1::uuid[])`,
+			`UPDATE task_activity SET actor_id = NULL WHERE actor_id = ANY($1::uuid[])`,
+		} {
+			if _, err := tx.Exec(ctx, statement, userIDs); err != nil {
 				return err
 			}
-			projectIDs = append(projectIDs, projectID)
 		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
+		return repairAdminlessProjects(ctx, tx)
+	})
+}
+
+// OnUserDeleted is the legacy in-process hook (role=all dev plane): the
+// admin delete path calls it directly, and it delegates to the same repair.
+func (s *Store) OnUserDeleted(ctx context.Context, userID string) error {
+	return s.RepairMissingUsers(ctx, []string{userID})
+}
+
+// repairAdminlessProjects promotes a successor admin (or soft-deletes a
+// memberless project) for every live project without an admin. The scan is
+// idempotent and also heals projects injured by an earlier failed delete.
+func repairAdminlessProjects(ctx context.Context, tx pgx.Tx) error {
+	rows, err := tx.Query(ctx, `
+		SELECT p.id
+		  FROM task_projects p
+		 WHERE p.deleted_at IS NULL
+		   AND NOT EXISTS (
+		         SELECT 1
+		           FROM task_project_members admin
+		          WHERE admin.project_id = p.id
+		            AND admin.role = 'admin')
+		 ORDER BY p.id
+		 FOR UPDATE OF p`)
+	if err != nil {
+		return err
+	}
+	projectIDs := []string{}
+	for rows.Next() {
+		var projectID string
+		if err := rows.Scan(&projectID); err != nil {
+			rows.Close()
 			return err
 		}
-
-		for _, projectID := range projectIDs {
-			var successorID string
-			err := tx.QueryRow(ctx, `
-				SELECT user_id
-				  FROM task_project_members
-				 WHERE project_id = $1::uuid AND user_id <> $2::uuid
-				 ORDER BY joined_at, user_id
-				 LIMIT 1
-				 FOR UPDATE`, projectID, userID).Scan(&successorID)
-			switch {
-			case errors.Is(err, pgx.ErrNoRows):
-				if _, err := tx.Exec(ctx, `
-					UPDATE task_projects
-					   SET deleted_at = now(), updated_at = now()
-					 WHERE id = $1::uuid AND deleted_at IS NULL`, projectID); err != nil {
-					return err
-				}
-			case err != nil:
+		projectIDs = append(projectIDs, projectID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, projectID := range projectIDs {
+		var successorID string
+		err := tx.QueryRow(ctx, `
+			SELECT user_id
+			  FROM task_project_members
+			 WHERE project_id = $1::uuid
+			 ORDER BY joined_at, user_id
+			 LIMIT 1
+			 FOR UPDATE`, projectID).Scan(&successorID)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			if _, err := tx.Exec(ctx, `
+				UPDATE task_projects
+				   SET deleted_at = now(), updated_at = now()
+				 WHERE id = $1::uuid AND deleted_at IS NULL`, projectID); err != nil {
 				return err
-			default:
-				if _, err := tx.Exec(ctx, `
-					UPDATE task_project_members
-					   SET role = 'admin'
-					 WHERE project_id = $1::uuid AND user_id = $2::uuid`, projectID, successorID); err != nil {
-					return err
-				}
+			}
+		case err != nil:
+			return err
+		default:
+			if _, err := tx.Exec(ctx, `
+				UPDATE task_project_members
+				   SET role = 'admin'
+				 WHERE project_id = $1::uuid AND user_id = $2::uuid`, projectID, successorID); err != nil {
+				return err
 			}
 		}
-		return nil
-	})
+	}
+	return nil
 }
